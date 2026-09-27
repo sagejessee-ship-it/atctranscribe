@@ -142,6 +142,11 @@ def parse_profile(
                 width_ft=_int(pair.get("RWY_WIDTH")),
                 true_alignment=_float(end.get("TRUE_ALIGNMENT")),
                 spoken=spoken_runway(end["RWY_END_ID"]),
+                latitude=_float(end.get("LAT_DECIMAL")),
+                longitude=_float(end.get("LONG_DECIMAL")),
+                elevation_ft=_float(end.get("RWY_END_ELEV")),
+                displaced_latitude=_float(end.get("LAT_DISPLACED_THR_DECIMAL")),
+                displaced_longitude=_float(end.get("LONG_DISPLACED_THR_DECIMAL")),
             )
         )
 

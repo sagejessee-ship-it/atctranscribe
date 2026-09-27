@@ -77,6 +77,30 @@ def cmd_airport_bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_airport_airspace(args: argparse.Namespace) -> int:
+    import httpx
+
+    from aerochorus.context.faa_airspace import fetch_airspace
+
+    with _client(args) as client:
+        airport = client.get_airport(args.icao)
+        if airport.get("latitude") is None:
+            print(f"{args.icao} has no reference point; bootstrap the airport first")
+            return 2
+        with httpx.Client() as http:
+            airspaces, provenance = fetch_airspace(
+                airport["latitude"], airport["longitude"], args.radius_nm, http
+            )
+        keep = {c.strip().upper() for c in args.classes.split(",")}
+        airspaces = [a for a in airspaces if (a["airspace_class"] or "").upper() in keep]
+        stored = client.put_airspaces(args.icao, {"airspaces": airspaces, "provenance": provenance})
+    for a in stored["airspaces"]:
+        floor = "SFC" if a["lower_ft"] == 0 else a["lower_ft"]
+        points = sum(len(r) for r in a["rings"])
+        print(f"{a['airspace_class']}  {a['name']}  {floor}-{a['upper_ft']} ft  ({points} pts)")
+    return 0
+
+
 def cmd_airport_show(args: argparse.Namespace) -> int:
     with _client(args) as client:
         print(json.dumps(client.get_airport(args.icao), indent=2))
@@ -245,6 +269,14 @@ def register(groups, api_opt) -> None:
     p.add_argument("--dry-run", action="store_true", help="print the profile; store nothing")
     api_opt(p)
     p.set_defaults(func=cmd_airport_bootstrap)
+    p = airport.add_parser(
+        "airspace", help="fetch Class B/C/D airspace around the airport from FAA ADDS (map context)"
+    )
+    p.add_argument("icao")
+    p.add_argument("--radius-nm", type=float, default=30.0)
+    p.add_argument("--classes", default="B,C,D")
+    api_opt(p)
+    p.set_defaults(func=cmd_airport_airspace)
     p = airport.add_parser("show", help="show a stored airport profile")
     p.add_argument("icao")
     api_opt(p)

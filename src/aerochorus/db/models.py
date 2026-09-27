@@ -671,8 +671,36 @@ class AirportRunway(Base):
     width_ft: Mapped[int | None] = mapped_column(Integer)
     true_alignment: Mapped[float | None] = mapped_column(Double)
     spoken: Mapped[list[str]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+    # Surveyed runway end (NASR APT_RWY_END) and displaced threshold, for the map.
+    latitude: Mapped[float | None] = mapped_column(Double)
+    longitude: Mapped[float | None] = mapped_column(Double)
+    elevation_ft: Mapped[float | None] = mapped_column(Double)
+    displaced_latitude: Mapped[float | None] = mapped_column(Double)
+    displaced_longitude: Mapped[float | None] = mapped_column(Double)
 
     __table_args__ = (UniqueConstraint("icao", "end_ident"),)
+
+
+class AirportAirspace(Base):
+    """Controlled airspace near an airport (FAA ADDS Class Airspace), simplified for display."""
+
+    __tablename__ = "airport_airspace"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    icao: Mapped[str] = mapped_column(ForeignKey("airport.icao", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text)
+    airspace_class: Mapped[str] = mapped_column(Text)
+    local_type: Mapped[str | None] = mapped_column(Text)
+    lower_ft: Mapped[int | None] = mapped_column(Integer)
+    lower_ref: Mapped[str | None] = mapped_column(Text)
+    upper_ft: Mapped[int | None] = mapped_column(Integer)
+    upper_ref: Mapped[str | None] = mapped_column(Text)
+    # [[lon, lat], ...] outer rings
+    rings: Mapped[list[list[list[float]]]] = mapped_column(JSONB)
+    source_id: Mapped[str | None] = mapped_column(Text)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+
+    __table_args__ = (Index("ix_airport_airspace_icao", "icao"),)
 
 
 class AirportFrequency(Base):

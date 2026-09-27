@@ -250,6 +250,28 @@ class AirportRunwayView(BaseModel):
     width_ft: int | None
     true_alignment: float | None
     spoken: list[str]
+    latitude: float | None = None
+    longitude: float | None = None
+    elevation_ft: float | None = None
+    displaced_latitude: float | None = None
+    displaced_longitude: float | None = None
+
+
+class AirspaceView(BaseModel):
+    name: str
+    airspace_class: str
+    local_type: str | None = None
+    lower_ft: int | None = None
+    lower_ref: str | None = None
+    upper_ft: int | None = None
+    upper_ref: str | None = None
+    rings: list[list[list[float]]]
+    source_id: str | None = None
+
+
+class AirspaceIn(BaseModel):
+    airspaces: list[AirspaceView]
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class AirportFrequencyView(BaseModel):
@@ -276,6 +298,8 @@ class AirportProfileView(BaseModel):
     runways: list[AirportRunwayView]
     frequencies: list[AirportFrequencyView]
     provenance: dict[str, Any]
+    airspaces: list[AirspaceView] = Field(default_factory=list)
+    airspace_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class SegmentReview(BaseModel):

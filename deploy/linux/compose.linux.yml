@@ -10,7 +10,4 @@ services:
     restart: unless-stopped
 
   api:
-    environment:
-      AEROCHORUS_OPENSKY_CLIENT_ID: ${AEROCHORUS_OPENSKY_CLIENT_ID:-}
-      AEROCHORUS_OPENSKY_CLIENT_SECRET: ${AEROCHORUS_OPENSKY_CLIENT_SECRET:-}
     restart: unless-stopped

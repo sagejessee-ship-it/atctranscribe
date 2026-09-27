@@ -19,6 +19,7 @@ from aerochorus.db.models import (
 from aerochorus.review_contracts import (
     AirportProfileIn,
     AirportProfileView,
+    AirspaceIn,
     AnnotationSave,
     AnnotationThreadView,
     BatchOutcome,
@@ -148,6 +149,17 @@ def get_airport(icao: str, session: SessionDep) -> AirportProfileView:
     if view is None:
         raise HTTPException(404, f"no airport profile for {icao}; bootstrap it first")
     return view
+
+
+@router.put("/airports/{icao}/airspaces", response_model=AirportProfileView)
+def put_airspaces(icao: str, body: AirspaceIn, session: SessionDep) -> AirportProfileView:
+    """Replace the airport's controlled-airspace polygons (FAA ADDS; map context)."""
+    try:
+        airport_svc.replace_airspaces(session, icao.upper(), body)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    session.commit()
+    return airport_svc.profile_view(session, icao.upper())
 
 
 @router.put("/airports/{icao}", response_model=AirportProfileView)

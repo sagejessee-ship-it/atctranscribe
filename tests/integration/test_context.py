@@ -141,3 +141,33 @@ def test_credentials_never_appear_in_responses(database_url):
         app.state.adsb_provider
     )
     app.state.engine.dispose()
+
+
+def test_airport_map_geometry_round_trips(http, segment_id):
+    profile = dict(KBWI, runways=[
+        {"pair": "10/28", "end_ident": "10", "length_ft": 10502, "width_ft": 150,
+         "true_alignment": 91.0, "spoken": ["one zero"],
+         "latitude": 39.1747, "longitude": -76.6896},
+        {"pair": "10/28", "end_ident": "28", "length_ft": 10502, "width_ft": 150,
+         "true_alignment": 271.0, "spoken": ["two eight"],
+         "latitude": 39.1726, "longitude": -76.6527},
+    ])  # fmt: skip
+    assert http.put("/api/v1/airports/KBWI", json=profile).status_code == 200
+    ring = [[-76.8, 39.1], [-76.5, 39.1], [-76.5, 39.3], [-76.8, 39.1]]
+    body = {
+        "airspaces": [
+            {"name": "BALTIMORE CLASS D", "airspace_class": "D", "lower_ft": 0,
+             "upper_ft": 2500, "rings": [ring]},
+        ],
+        "provenance": {"source": "FAA ADDS Class Airspace (test)"},
+    }  # fmt: skip
+    stored = http.put("/api/v1/airports/KBWI/airspaces", json=body)
+    assert stored.status_code == 200
+    view = http.get("/api/v1/airports/KBWI").json()
+    assert view["runways"][0]["latitude"] == pytest.approx(39.1747)
+    (space,) = view["airspaces"]
+    assert space["upper_ft"] == 2500 and space["rings"] == [ring]
+    assert view["airspace_provenance"]["source"].startswith("FAA ADDS")
+    # replacing is idempotent, never additive
+    assert len(http.put("/api/v1/airports/KBWI/airspaces", json=body).json()["airspaces"]) == 1
+    assert http.put("/api/v1/airports/KXXX/airspaces", json=body).status_code == 404

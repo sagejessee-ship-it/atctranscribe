@@ -20,6 +20,12 @@ class ControlPlaneSettings(BaseSettings):
     # empty means "not configured". They stay on the control plane, never in responses.
     opensky_username: str | None = None
     opensky_password: SecretStr | None = None
+    # OpenSky REST API client (account page -> API client): OAuth2 client credentials.
+    opensky_client_id: str | None = None
+    opensky_client_secret: SecretStr | None = None
+    # auto: Trino (historical state vectors) when access works, else REST tracks.
+    adsb_provider: str = "auto"
+    adsb_rest_max_tracks: int = 8
     opensky_timeout_s: float = 120.0
     adsb_window_before_s: int = 60
     adsb_window_after_s: int = 60

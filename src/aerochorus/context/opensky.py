@@ -16,6 +16,8 @@ References: https://openskynetwork.github.io/opensky-api/trino.html
 
 from __future__ import annotations
 
+import base64
+import json
 import math
 import time as _time
 from dataclasses import asdict, dataclass, field
@@ -28,6 +30,7 @@ TOKEN_URL = (
     "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
 )
 TRINO_URL = "https://trino.opensky-network.org"
+REST_URL = "https://opensky-network.org/api"
 CATALOG, SCHEMA, TABLE = "minio", "osky", "state_vectors_data4"
 SOURCE = f"{CATALOG}.{SCHEMA}.{TABLE}"
 COLUMNS = (
@@ -186,12 +189,20 @@ class OpenSkyTrino:
             raise ProviderError(f"OpenSky auth failed: HTTP {response.status_code}")
         body = response.json()
         self._token = (body["access_token"], now + float(body.get("expires_in", 300)))
+        # Log in may use the e-mail address; Trino needs the account username,
+        # which the token carries as preferred_username (as pyopensky does).
+        claimed = _jwt_claims(body["access_token"]).get("preferred_username")
+        if claimed:
+            self.trino_user = str(claimed).lower()
         return self._token[0]
 
+    trino_user: str | None = None
+
     def fetch(self, query: AdsbQuery) -> ProviderResult:
+        token = self._access_token()
         headers = {
-            "Authorization": f"Bearer {self._access_token()}",
-            "X-Trino-User": self.username,
+            "Authorization": f"Bearer {token}",
+            "X-Trino-User": self.trino_user or self.username,
             "X-Trino-Catalog": CATALOG,
             "X-Trino-Schema": SCHEMA,
             "X-Trino-Source": "aerochorus",
@@ -204,11 +215,17 @@ class OpenSkyTrino:
                 f"{TRINO_URL}/v1/statement", content=query.sql(), headers=headers
             )
             while True:
+                if response.status_code in (401, 403):
+                    raise ProviderUnavailable(
+                        "OpenSky Trino refused this account (historical access not granted yet?)"
+                    )
                 if response.status_code >= 400:
                     raise ProviderError(f"OpenSky Trino HTTP {response.status_code}")
                 payload = response.json()
                 if payload.get("error"):
                     message = payload["error"].get("message", "query failed")
+                    if "access denied" in message.lower() or "permission" in message.lower():
+                        raise ProviderUnavailable(f"OpenSky Trino: {message}")
                     raise ProviderError(f"OpenSky Trino: {message}")
                 if payload.get("columns") and not columns:
                     columns = [c["name"] for c in payload["columns"]]
@@ -232,9 +249,206 @@ class OpenSkyTrino:
                 "state": stats.get("state"),
                 "processed_bytes": stats.get("processedBytes"),
                 "elapsed_s": round(_time.monotonic() - started, 2),
-                "trino_user": self.username,
+                "trino_user": self.trino_user or self.username,
             },
         )
+
+
+def _jwt_claims(token: str) -> dict[str, Any]:
+    """Payload of a JWT (unverified: used only to read our own username)."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except (IndexError, ValueError):
+        return {}
+
+
+class OpenSkyRest:
+    """OpenSky REST API with an OAuth2 client-credentials API client.
+
+    The REST API cannot return historical state vectors (its state-vector
+    endpoint reaches back about an hour), so for an archived segment it answers "who was
+    arriving/departing KBWI around then, and where were they": flights from
+    ``/flights/arrival`` + ``/flights/departure`` around the segment, then each
+    active flight's ``/tracks/all`` waypoints, interpolated to the segment time.
+    Limits: flights are published after a nightly batch (not for today), tracks
+    only for the last 30 days, and only KBWI arrivals/departures are covered
+    (no overflights). Each fetch costs API credits (about 30 per call).
+    """
+
+    name = "opensky-rest"
+
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        *,
+        airport: str = "KBWI",
+        max_tracks: int = 8,
+        http: httpx.Client | None = None,
+    ) -> None:
+        self.client_id = client_id
+        self._secret = client_secret
+        self.airport = airport
+        self.max_tracks = max_tracks
+        self._http = http or httpx.Client(timeout=60.0)
+        self._token: tuple[str, float] | None = None
+
+    def __repr__(self) -> str:
+        return f"OpenSkyRest(client_id={self.client_id!r})"
+
+    def _access_token(self) -> str:
+        now = _time.time()
+        if self._token and self._token[1] - 60 > now:
+            return self._token[0]
+        try:
+            response = self._http.post(
+                TOKEN_URL,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.client_id,
+                    "client_secret": self._secret,
+                },
+            )
+        except httpx.TransportError as exc:
+            raise ProviderError(f"OpenSky auth unreachable: {type(exc).__name__}") from exc
+        if response.status_code in (400, 401, 403):
+            raise ProviderUnavailable("OpenSky rejected the API client credentials")
+        if response.status_code >= 400:
+            raise ProviderError(f"OpenSky auth failed: HTTP {response.status_code}")
+        body = response.json()
+        self._token = (body["access_token"], now + float(body.get("expires_in", 1800)))
+        return self._token[0]
+
+    def _get(self, path: str, params: dict[str, Any]) -> Any:
+        headers = {"Authorization": f"Bearer {self._access_token()}"}
+        try:
+            response = self._http.get(f"{REST_URL}{path}", params=params, headers=headers)
+        except httpx.TransportError as exc:
+            raise ProviderError(f"OpenSky REST unreachable: {type(exc).__name__}") from exc
+        if response.status_code == 404:
+            return []  # "no data for this interval"
+        if response.status_code == 429:
+            retry = response.headers.get("X-Rate-Limit-Retry-After-Seconds", "?")
+            raise ProviderError(f"OpenSky REST credits exhausted (retry after {retry} s)")
+        if response.status_code in (401, 403):
+            raise ProviderUnavailable("OpenSky REST refused the API client")
+        if response.status_code >= 400:
+            raise ProviderError(f"OpenSky REST HTTP {response.status_code} on {path}")
+        return response.json()
+
+    def fetch(self, query: AdsbQuery) -> ProviderResult:
+        t = query.segment_utc
+        started = _time.monotonic()
+        arrivals = (
+            self._get(
+                "/flights/arrival", {"airport": self.airport, "begin": t - 1800, "end": t + 3600}
+            )
+            or []
+        )
+        departures = (
+            self._get(
+                "/flights/departure", {"airport": self.airport, "begin": t - 3600, "end": t + 1800}
+            )
+            or []
+        )
+        flights = {}
+        for flight in [*arrivals, *departures]:
+            first, last = flight.get("firstSeen") or 0, flight.get("lastSeen") or 0
+            if first - 600 <= t <= last + 600 and flight.get("icao24"):
+                flights[flight["icao24"]] = flight
+        # Nearest in time first; the credit budget caps the number of tracks.
+        ranked = sorted(
+            flights.values(),
+            key=lambda f: min(
+                abs((f.get("firstSeen") or t) - t), abs((f.get("lastSeen") or t) - t)
+            ),
+        )[: self.max_tracks]
+        rows: list[list[Any]] = []
+        tracks = 0
+        for flight in ranked:
+            track = self._get("/tracks/all", {"icao24": flight["icao24"], "time": t})
+            if not track or not track.get("path"):
+                continue
+            tracks += 1
+            rows += _track_rows(track, flight, query)
+        return ProviderResult(
+            columns=list(COLUMNS),
+            rows=rows,
+            metadata={
+                "flights_seen": len(flights),
+                "tracks_fetched": tracks,
+                "requests": 2 + len(ranked),
+                "elapsed_s": round(_time.monotonic() - started, 2),
+                "coverage": f"{self.airport} arrivals/departures only; tracks <= 30 days old",
+                "interpolated": True,
+            },
+        )
+
+
+def _track_rows(track: dict[str, Any], flight: dict[str, Any], query: AdsbQuery) -> list[list]:
+    """Waypoints near the window (for trails) + one position interpolated at the segment time."""
+    path = [p for p in track["path"] if p[1] is not None and p[2] is not None]
+    callsign = (track.get("callsign") or flight.get("callsign") or "").strip() or None
+    rows = []
+    lo, hi = query.t_start - 240, query.t_end + 240
+    for i, (time, lat, lon, alt, heading, ground) in enumerate(path):
+        if lo <= time <= hi and query.lat_min - 0.2 <= lat <= query.lat_max + 0.2:
+            speed = vrate = None
+            if i + 1 < len(path) and path[i + 1][0] > time:
+                nxt = path[i + 1]
+                dt = nxt[0] - time
+                speed = _distance_nm(lat, lon, nxt[1], nxt[2]) * 1852 / dt
+                if alt is not None and nxt[3] is not None:
+                    vrate = (nxt[3] - alt) / dt
+            rows.append(
+                [time, track["icao24"], callsign, lat, lon, alt, None, speed, heading, vrate,
+                 ground, None, time]
+            )  # fmt: skip
+    t = query.segment_utc
+    for (t0, la0, lo0, a0, h0, g0), (t1, la1, lo1, a1, _h1, _g1) in zip(
+        path, path[1:], strict=False
+    ):
+        if t0 <= t <= t1 and t1 > t0:
+            f = (t - t0) / (t1 - t0)
+            alt = a0 + f * (a1 - a0) if a0 is not None and a1 is not None else a0
+            speed = _distance_nm(la0, lo0, la1, lo1) * 1852 / (t1 - t0)
+            vrate = (a1 - a0) / (t1 - t0) if a0 is not None and a1 is not None else None
+            rows.append(
+                [t, track["icao24"], callsign, la0 + f * (la1 - la0), lo0 + f * (lo1 - lo0), alt,
+                 None, speed, h0, vrate, g0, None, t]
+            )  # fmt: skip
+            break
+    return rows
+
+
+class AutoProvider:
+    """Trino when it works (true historical state vectors), else REST (tracks)."""
+
+    name = "opensky-auto"
+
+    def __init__(self, trino: OpenSkyTrino | None, rest: OpenSkyRest | None) -> None:
+        self.trino, self.rest = trino, rest
+
+    def fetch(self, query: AdsbQuery) -> ProviderResult:
+        notes = []
+        if self.trino is not None:
+            try:
+                result = self.trino.fetch(query)
+                result.metadata["provider"] = self.trino.name
+                return result
+            except ProviderUnavailable as exc:
+                if self.rest is None:
+                    raise
+                notes.append(f"trino unavailable: {exc}")
+        if self.rest is None:
+            raise ProviderUnavailable("no OpenSky provider configured")
+        result = self.rest.fetch(query)
+        result.metadata["provider"] = self.rest.name
+        if notes:
+            result.metadata["fallback"] = notes
+        return result
 
 
 def _distance_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

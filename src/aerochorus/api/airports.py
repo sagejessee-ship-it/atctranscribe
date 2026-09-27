@@ -7,12 +7,20 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from aerochorus.db.models import Airport, AirportAlias, AirportFrequency, AirportRunway
+from aerochorus.db.models import (
+    Airport,
+    AirportAirspace,
+    AirportAlias,
+    AirportFrequency,
+    AirportRunway,
+)
 from aerochorus.review_contracts import (
     AirportFrequencyView,
     AirportProfileIn,
     AirportProfileView,
     AirportRunwayView,
+    AirspaceIn,
+    AirspaceView,
 )
 
 STATION_KINDS = ("station", "faa", "icao")
@@ -51,6 +59,13 @@ def profile_view(session: Session, icao: str) -> AirportProfileView | None:
         .order_by(AirportFrequency.service, AirportFrequency.frequency_hz)
     )
     aliases = session.scalars(select(AirportAlias.alias).where(AirportAlias.icao == icao))
+    airspaces = list(
+        session.scalars(
+            select(AirportAirspace)
+            .where(AirportAirspace.icao == icao)
+            .order_by(AirportAirspace.airspace_class, AirportAirspace.lower_ft)
+        )
+    )
     return AirportProfileView(
         icao=airport.icao,
         faa_id=airport.faa_id,
@@ -71,6 +86,11 @@ def profile_view(session: Session, icao: str) -> AirportProfileView | None:
                 width_ft=r.width_ft,
                 true_alignment=r.true_alignment,
                 spoken=r.spoken,
+                latitude=r.latitude,
+                longitude=r.longitude,
+                elevation_ft=r.elevation_ft,
+                displaced_latitude=r.displaced_latitude,
+                displaced_longitude=r.displaced_longitude,
             )
             for r in runways
         ],
@@ -86,7 +106,34 @@ def profile_view(session: Session, icao: str) -> AirportProfileView | None:
             for f in frequencies
         ],
         provenance=airport.provenance,
+        airspaces=[
+            AirspaceView(
+                name=a.name,
+                airspace_class=a.airspace_class,
+                local_type=a.local_type,
+                lower_ft=a.lower_ft,
+                lower_ref=a.lower_ref,
+                upper_ft=a.upper_ft,
+                upper_ref=a.upper_ref,
+                rings=a.rings,
+                source_id=a.source_id,
+            )
+            for a in airspaces
+        ],
+        airspace_provenance=airspaces[0].provenance if airspaces else {},
     )
+
+
+def replace_airspaces(session: Session, icao: str, body: AirspaceIn) -> int:
+    if session.get(Airport, icao) is None:
+        raise LookupError(f"no airport profile for {icao}")
+    session.execute(delete(AirportAirspace).where(AirportAirspace.icao == icao))
+    session.add_all(
+        AirportAirspace(icao=icao, provenance=body.provenance, **a.model_dump())
+        for a in body.airspaces
+    )
+    session.flush()
+    return len(body.airspaces)
 
 
 def station_map(session: Session) -> dict[str, str]:

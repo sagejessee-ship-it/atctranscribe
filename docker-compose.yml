@@ -37,6 +37,11 @@ services:
       # Optional on-demand ADS-B context (ADR-020): put these in ./.env (gitignored).
       AEROCHORUS_OPENSKY_USERNAME: ${AEROCHORUS_OPENSKY_USERNAME:-}
       AEROCHORUS_OPENSKY_PASSWORD: ${AEROCHORUS_OPENSKY_PASSWORD:-}
+      AEROCHORUS_OPENSKY_CLIENT_ID: ${AEROCHORUS_OPENSKY_CLIENT_ID:-}
+      AEROCHORUS_OPENSKY_CLIENT_SECRET: ${AEROCHORUS_OPENSKY_CLIENT_SECRET:-}
+      AEROCHORUS_ADSB_PROVIDER: ${AEROCHORUS_ADSB_PROVIDER:-auto}
+      # Gemini adjudication via OpenRouter (optional)
+      AEROCHORUS_OPENROUTER_API_KEY: ${AEROCHORUS_OPENROUTER_API_KEY:-}
     ports:
       # Loopback by default. On the host that serves remote workers (e.g. the
       # Linux host serving the 5080 box), set AEROCHORUS_API_BIND to its LAN address.

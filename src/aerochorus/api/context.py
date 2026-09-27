@@ -21,6 +21,8 @@ from aerochorus.api.sweeps import Invalid, NotFound
 from aerochorus.context.opensky import (
     SOURCE,
     AdsbProvider,
+    AutoProvider,
+    OpenSkyRest,
     OpenSkyTrino,
     ProviderError,
     ProviderUnavailable,
@@ -68,9 +70,26 @@ class AdsbStatus(BaseModel):
 
 def make_provider(settings: ControlPlaneSettings) -> AdsbProvider | None:
     password = settings.opensky_password.get_secret_value() if settings.opensky_password else ""
-    if not settings.opensky_username or not password:
-        return None
-    return OpenSkyTrino(settings.opensky_username, password, timeout_s=settings.opensky_timeout_s)
+    secret = (
+        settings.opensky_client_secret.get_secret_value() if settings.opensky_client_secret else ""
+    )
+    trino = (
+        OpenSkyTrino(settings.opensky_username, password, timeout_s=settings.opensky_timeout_s)
+        if settings.opensky_username and password
+        else None
+    )
+    rest = (
+        OpenSkyRest(settings.opensky_client_id, secret, max_tracks=settings.adsb_rest_max_tracks)
+        if settings.opensky_client_id and secret
+        else None
+    )
+    if settings.adsb_provider == "trino":
+        return trino
+    if settings.adsb_provider == "rest":
+        return rest
+    if trino and rest:
+        return AutoProvider(trino, rest)
+    return trino or rest
 
 
 def _view(snapshot: ContextSnapshot, cached: bool = False) -> SnapshotView:
@@ -116,8 +135,8 @@ def status(
         provider=provider.name if provider else None,
         message=None
         if provider
-        else "ADS-B context not configured (set AEROCHORUS_OPENSKY_USERNAME/PASSWORD "
-        "on the control plane)",
+        else "ADS-B context not configured (set AEROCHORUS_OPENSKY_USERNAME/PASSWORD for "
+        "Trino, or AEROCHORUS_OPENSKY_CLIENT_ID/SECRET for the REST API, on the control plane)",
         window_before_s=settings.adsb_window_before_s,
         window_after_s=settings.adsb_window_after_s,
         radius_nm=settings.adsb_radius_nm,
@@ -166,8 +185,10 @@ def fetch(
     snapshot = ContextSnapshot(
         segment_id=segment_id,
         kind="adsb",
-        provider=provider.name,
-        source=SOURCE,
+        provider=result.metadata.get("provider", provider.name),
+        source=SOURCE
+        if result.metadata.get("provider", provider.name) != "opensky-rest"
+        else "opensky REST /flights + /tracks (interpolated)",
         query=described,
         query_sha256=hashlib.sha256(json.dumps(described, sort_keys=True).encode()).hexdigest(),
         t_start=datetime.fromtimestamp(query.t_start, UTC),

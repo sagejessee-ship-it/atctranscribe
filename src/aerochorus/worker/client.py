@@ -123,6 +123,9 @@ class ApiClient:
     def put_airport(self, profile: dict[str, Any]) -> dict[str, Any]:
         return self._request("PUT", f"/api/v1/airports/{profile['icao']}", json=profile)
 
+    def put_airspaces(self, icao: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PUT", f"/api/v1/airports/{icao}/airspaces", json=body)
+
     def get_airport(self, icao: str) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/airports/{icao}")
 
