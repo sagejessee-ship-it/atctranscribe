@@ -217,7 +217,11 @@ export function SegmentInspector({
       <SpanPanel segment={segment} selection={span} baseline={baseline} onSelection={setSpan} onSaved={onToast} />
       <NeighborContext neighbors={segment.neighbors} onOpen={onOpen} onBeforePlay={() => player.current?.pause()} />
       <AirportContext profile={segment.airport_profile} frequencyHz={segment.frequency_hz} />
-      <AdsbContext segmentId={segment.segment_id} hasUtc={segment.capture_start_utc != null} />
+      <AdsbContext
+        segmentId={segment.segment_id}
+        hasUtc={segment.capture_start_utc != null}
+        profile={segment.airport_profile}
+      />
     </div>
   );
 }

@@ -1,20 +1,32 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Satellite } from "lucide-react";
+import { useState } from "react";
 
 import { api } from "../api/client";
-import type { AdsbSnapshot } from "../api/types";
+import type { AdsbSnapshot, AirportProfile } from "../api/types";
 import { Button, ErrorBox } from "../components/ui";
 import { fmtUtc } from "../lib/format";
+import { AirportMap } from "./AirportMap";
 
 const dash = (v: number | string | null | undefined, suffix = "") => (v == null ? "—" : `${v}${suffix}`);
 
 /**
- * Nearby historical traffic from OpenSky, on demand. Nothing is queried until
- * the button is pressed; the snapshot is then cached server-side. Context
- * only: it never changes a transcript or label.
+ * Nearby historical traffic from OpenSky, on demand, over a simplified airport
+ * map (runways, controlled airspace). Nothing is queried until the button is
+ * pressed; the snapshot is then cached server-side. Context only: it never
+ * changes a transcript or label.
  */
-export function AdsbContext({ segmentId, hasUtc }: { segmentId: number; hasUtc: boolean }) {
+export function AdsbContext({
+  segmentId,
+  hasUtc,
+  profile = null,
+}: {
+  segmentId: number;
+  hasUtc: boolean;
+  profile?: AirportProfile | null;
+}) {
   const client = useQueryClient();
+  const [highlight, setHighlight] = useState<string | null>(null);
   // Status reads the cache only; it never contacts the provider.
   const status = useQuery({ queryKey: ["adsb", segmentId], queryFn: () => api.adsbStatus(segmentId) });
   const fetcher = useMutation({
@@ -30,7 +42,7 @@ export function AdsbContext({ segmentId, hasUtc }: { segmentId: number; hasUtc: 
   return (
     <details className="section section--details" open={!!snapshot || fetcher.isPending}>
       <summary className="section__title">
-        ADS-B context{" "}
+        ADS-B context &amp; map{" "}
         <span className="muted">
           {snapshot ? `${snapshot.aircraft.length} aircraft · cached` : configured ? "on demand" : "unavailable"}
         </span>
@@ -40,6 +52,15 @@ export function AdsbContext({ segmentId, hasUtc }: { segmentId: number; hasUtc: 
         <p className="note note--neutral" role="status">
           ADS-B context unavailable: {status.data.message ?? "not configured"}. Review is unaffected.
         </p>
+      ) : null}
+      {profile?.latitude != null ? (
+        <AirportMap
+          profile={profile}
+          snapshot={snapshot}
+          highlight={highlight}
+          onHighlight={setHighlight}
+          defaultRange={snapshot?.radius_nm ?? 10}
+        />
       ) : null}
       {configured && !snapshot ? (
         <div className="adsb__actions">
@@ -84,7 +105,12 @@ export function AdsbContext({ segmentId, hasUtc }: { segmentId: number; hasUtc: 
             </thead>
             <tbody>
               {snapshot.aircraft.map((a) => (
-                <tr key={a.icao24}>
+                <tr
+                  key={a.icao24}
+                  data-hi={a.icao24 === highlight}
+                  onMouseEnter={() => setHighlight(a.icao24)}
+                  onMouseLeave={() => setHighlight(null)}
+                >
                   <td className="num">{a.callsign ?? <span className="muted">—</span>}</td>
                   <td className="num">{a.icao24}</td>
                   <td className="num">

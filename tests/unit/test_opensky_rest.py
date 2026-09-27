@@ -122,3 +122,32 @@ def test_faa_airspace_parsing_and_simplification():
         "MSL",
     )
     assert b["rings"][0][0] == [-77, 39] and b["source_id"] == "g1"
+
+
+def test_trails_are_ordered_thinned_and_relative_to_the_segment():
+    from aerochorus.context.opensky import COLUMNS, trails
+
+    rows = [
+        [
+            T + dt,
+            "a1b2c3",
+            "SWA456",
+            39.2 + dt / 1e4,
+            -76.7,
+            300.0,
+            None,
+            None,
+            90.0,
+            None,
+            False,
+            None,
+            T + dt,
+        ]  # noqa: E501
+        for dt in range(-100, 50, 2)
+    ] + [[T, "ffffff", None, None, None, None, None, None, None, None, None, None, T]]
+    out = trails(list(COLUMNS), list(reversed(rows)), T, max_points=10)
+    assert list(out) == ["a1b2c3"]  # an aircraft with no position has no trail
+    path = out["a1b2c3"]
+    assert len(path) == 10 and path[0][0] == -100 and path[-1][0] == 48
+    assert [p[0] for p in path] == sorted(p[0] for p in path)
+    assert path[0][3] == round(300 * 3.28084)

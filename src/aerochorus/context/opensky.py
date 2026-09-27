@@ -463,6 +463,42 @@ def _round(value: Any, digits: int) -> float | None:
     return None if value is None else round(float(value), digits)
 
 
+def trails(
+    columns: list[str], rows: list[list[Any]], segment_utc: int, max_points: int = 24
+) -> dict[str, list[list[Any]]]:
+    """Per-aircraft position history from the stored rows, for the map.
+
+    ``{icao24: [[offset_s, lat, lon, baro_alt_ft], ...]}`` in time order, evenly
+    thinned to ``max_points`` (first and last kept). Derived at view time, so
+    snapshots stored before trails existed get them too.
+    """
+    index = {name: i for i, name in enumerate(columns)}
+    if not {"icao24", "time", "lat", "lon"} <= index.keys():
+        return {}
+    by_icao: dict[str, dict[int, list[Any]]] = {}
+    for row in rows:
+        icao, t = row[index["icao24"]], row[index["time"]]
+        lat, lon = row[index["lat"]], row[index["lon"]]
+        if icao is None or t is None or lat is None or lon is None:
+            continue
+        baro = row[index["baroaltitude"]] if "baroaltitude" in index else None
+        point = [
+            int(t) - segment_utc,
+            round(lat, 5),
+            round(lon, 5),
+            None if baro is None else round(baro * M_TO_FT),
+        ]
+        by_icao.setdefault(icao, {})[int(t)] = point
+    out = {}
+    for icao, points in by_icao.items():
+        ordered = [points[t] for t in sorted(points)]
+        if len(ordered) > max_points:
+            step = (len(ordered) - 1) / (max_points - 1)
+            ordered = [ordered[round(i * step)] for i in range(max_points)]
+        out[icao] = ordered
+    return out
+
+
 def summarize(result: ProviderResult, query: AdsbQuery) -> list[dict[str, Any]]:
     """One row per aircraft: the state vector nearest in time to the segment start."""
     index = {name: i for i, name in enumerate(result.columns)}

@@ -28,6 +28,7 @@ from aerochorus.context.opensky import (
     ProviderUnavailable,
     build_query,
     summarize,
+    trails,
 )
 from aerochorus.db.models import Airport, ContextSnapshot, Segment
 from aerochorus.settings import ControlPlaneSettings
@@ -55,6 +56,8 @@ class SnapshotView(BaseModel):
     query: dict[str, Any]
     provider_meta: dict[str, Any]
     aircraft: list[dict[str, Any]]
+    # {icao24: [[offset_s, lat, lon, baro_alt_ft], ...]} from the stored rows (map trails)
+    trails: dict[str, list[list[Any]]] = {}
     cached: bool = False
 
 
@@ -107,6 +110,11 @@ def _view(snapshot: ContextSnapshot, cached: bool = False) -> SnapshotView:
         query=snapshot.query,
         provider_meta=snapshot.provider_meta,
         aircraft=snapshot.summary,
+        trails=trails(
+            snapshot.raw.get("columns") or [],
+            snapshot.raw.get("rows") or [],
+            int(snapshot.query.get("segment_utc") or snapshot.t_start.timestamp()),
+        ),
         cached=cached,
     )
 

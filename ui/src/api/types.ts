@@ -250,6 +250,25 @@ export interface AirportRunway {
   width_ft: number | null;
   true_alignment: number | null;
   spoken: string[];
+  // Surveyed runway end (FAA NASR), for the map.
+  latitude?: number | null;
+  longitude?: number | null;
+  elevation_ft?: number | null;
+  displaced_latitude?: number | null;
+  displaced_longitude?: number | null;
+}
+
+/** Controlled airspace polygon (FAA ADDS Class Airspace, simplified). Rings are [lon, lat][]. */
+export interface Airspace {
+  name: string;
+  airspace_class: string;
+  local_type: string | null;
+  lower_ft: number | null;
+  lower_ref: string | null;
+  upper_ft: number | null;
+  upper_ref: string | null;
+  rings: [number, number][][];
+  source_id: string | null;
 }
 
 export interface AirportFrequency {
@@ -276,6 +295,8 @@ export interface AirportProfile {
   runways: AirportRunway[];
   frequencies: AirportFrequency[];
   provenance: Record<string, unknown>;
+  airspaces?: Airspace[];
+  airspace_provenance?: Record<string, unknown>;
 }
 
 export interface SegmentReview {
@@ -415,6 +436,8 @@ export interface AdsbSnapshot {
   query: Record<string, unknown>;
   provider_meta: Record<string, unknown>;
   aircraft: AdsbAircraft[];
+  /** icao24 → [offset_s, lat, lon, baro_alt_ft][] in time order (map trails). */
+  trails?: Record<string, [number, number, number, number | null][]>;
   cached: boolean;
 }
 

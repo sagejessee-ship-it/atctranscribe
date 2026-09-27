@@ -1356,3 +1356,200 @@ a {
   padding: 0 3px;
   pointer-events: none;
 }
+
+/* --- airport map (runways, airspace, ADS-B traffic) --------------------------------------- */
+
+.amap {
+  margin: var(--space-4) 0 var(--space-5);
+}
+.amap__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+.amap__svg {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  user-select: none;
+}
+.amap__bg {
+  fill: var(--surface-1);
+}
+.amap__airspace path {
+  fill-opacity: 0.035;
+  stroke-width: 1.4;
+}
+.amap__airspace--B path {
+  fill: var(--map-class-b);
+  stroke: var(--map-class-b);
+}
+.amap__airspace--C path {
+  fill: var(--map-class-c);
+  stroke: var(--map-class-c);
+}
+.amap__airspace--D path {
+  fill: var(--map-class-d);
+  fill-opacity: 0.03;
+  stroke: var(--map-class-d);
+  stroke-dasharray: 5 3;
+}
+.amap__airspace:hover path {
+  fill-opacity: 0.12;
+}
+.amap__alt text {
+  fill: var(--map-class-b);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.amap__airspace--C .amap__alt text {
+  fill: var(--map-class-c);
+}
+.amap__alt line {
+  stroke: var(--map-class-b);
+  stroke-width: 0.8;
+}
+.amap__ring circle {
+  fill: none;
+  stroke: var(--map-ring);
+  stroke-dasharray: 2 3;
+}
+.amap__ring text {
+  fill: var(--text-faint);
+  font-size: 9px;
+}
+.amap__rwy line {
+  stroke: var(--map-runway);
+  stroke-width: 4;
+  stroke-linecap: butt;
+}
+.amap__rwy circle {
+  fill: var(--map-runway);
+}
+.amap__rwy text {
+  fill: var(--text-muted);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.amap__thr {
+  fill: var(--surface-1) !important;
+}
+.amap__ac {
+  cursor: default;
+}
+.amap__ac-body {
+  fill: var(--map-traffic);
+  stroke: var(--surface-1);
+  stroke-width: 0.8;
+}
+.amap__ac--ground .amap__ac-body {
+  fill: var(--map-ground);
+}
+.amap__trail {
+  fill: none;
+  stroke: var(--map-traffic);
+  stroke-opacity: 0.35;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+.amap__trail--future {
+  stroke-dasharray: 2 3;
+  stroke-opacity: 0.25;
+}
+.amap__ac--ground .amap__trail {
+  stroke: var(--map-ground);
+}
+.amap__tag {
+  fill: var(--map-traffic);
+  font-size: 10px;
+  paint-order: stroke;
+  stroke: var(--surface-1);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.amap__tag--sub {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+.amap__ac--ground .amap__tag {
+  fill: var(--map-ground);
+  font-size: 9px;
+}
+.amap__ac--hi .amap__ac-body {
+  fill: var(--map-highlight);
+}
+.amap__ac--hi .amap__trail {
+  stroke: var(--map-highlight);
+  stroke-opacity: 0.8;
+  stroke-width: 1.8;
+}
+.amap__ac--hi .amap__tag {
+  fill: var(--map-highlight);
+  font-weight: 700;
+}
+.amap__north path {
+  fill: var(--text-muted);
+}
+.amap__north text,
+.amap__scale text {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+.amap__scale path {
+  fill: none;
+  stroke: var(--text-muted);
+}
+.amap__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.amap__key::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 8px;
+  margin-right: var(--space-2);
+  vertical-align: middle;
+  border: 1.4px solid var(--map-class-b);
+  border-radius: 1px;
+}
+.amap__key--C::before {
+  border-color: var(--map-class-c);
+}
+.amap__key--D::before {
+  border-style: dashed;
+}
+.amap__key--air::before {
+  width: 8px;
+  border: 0;
+  background: var(--map-traffic);
+  clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 100%);
+}
+.amap__key--ground::before {
+  width: 6px;
+  height: 6px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--map-ground);
+}
+.amap__key--trail::before {
+  height: 0;
+  border: 0;
+  border-top: 1.4px solid var(--map-traffic);
+  opacity: 0.5;
+}
+.adsb tr[data-hi="true"] td {
+  background: var(--row-selected);
+}

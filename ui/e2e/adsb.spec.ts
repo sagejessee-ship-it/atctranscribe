@@ -38,6 +38,23 @@ test("ADS-B fetched on demand, cached on reopen, refreshed explicitly", async ({
   await expect(page.getByTestId("adsb-provenance")).not.toContainText(`snapshot #${snapshot}`);
   expect(await adsbCalls(page)).toBe(before + 2);
 
+  // The map: runways from surveyed ends, stacked airspace, traffic with trails.
+  const map = page.getByTestId("airport-map");
+  await expect(map.getByRole("img", { name: /Simplified map of KBWI: 3 runways, 2 controlled airspace areas, 2 aircraft/ })).toBeVisible();
+  await expect(map.getByTestId("map-runway-10/28")).toHaveCount(1);
+  await expect(map.locator('[data-class="B"] path')).toHaveCount(1);
+  await expect(map.locator('[data-class="D"] path')).toHaveCount(1);
+  const swa = map.getByTestId("map-aircraft-a0f00d");
+  await expect(swa).toContainText("SWA456");
+  await expect(swa).toContainText("040"); // hundreds of feet
+  await expect(swa.locator("polyline.amap__trail:not(.amap__trail--future)")).toHaveCount(1); // track so far
+  // Hovering a table row highlights the aircraft on the map, and back.
+  await page.getByRole("table", { name: /Nearby aircraft/ }).getByRole("row").filter({ hasText: "SWA456" }).hover();
+  await expect(swa).toHaveClass(/amap__ac--hi/);
+  await map.getByRole("button", { name: "5 nm" }).click();
+  await expect(map.getByRole("img", { name: /5 nautical mile range/ })).toBeVisible();
+  await expect(map.locator(".amap__rwy text", { hasText: "33L" })).toHaveCount(1); // idents when zoomed in
+
   // Context never touches the transcript or the label.
   await expect(page.getByLabel(/Corrected transcript/)).not.toHaveValue(/AAL2669/);
 });
@@ -50,6 +67,9 @@ test("ADS-B unavailable without credentials; review still works", async ({ page 
   await panel.locator("summary").click();
   await expect(panel.getByRole("status")).toContainText("not configured");
   await expect(panel.getByRole("button", { name: "Fetch ADS-B context" })).toHaveCount(0);
+  // The airport map still works without a traffic provider.
+  await expect(panel.getByRole("img", { name: /Simplified map of KBWI: 3 runways/ })).toBeVisible();
+  await expect(panel.locator(".amap__ac")).toHaveCount(0);
 
   // Review continues: correct and save.
   const editor = page.getByLabel(/Corrected transcript/);

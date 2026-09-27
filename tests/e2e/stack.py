@@ -128,14 +128,16 @@ KBWI = {
             "width_ft": 150,
             "true_alignment": None,
             "spoken": [spoken],
+            "latitude": lat,
+            "longitude": lon,
         }
-        for pair, end, length, spoken in (
-            ("10/28", "10", 10503, "runway one zero"),
-            ("10/28", "28", 10503, "runway two eight"),
-            ("15L/33R", "15L", 5000, "runway one five left"),
-            ("15L/33R", "33R", 5000, "runway three three right"),
-            ("15R/33L", "15R", 9501, "runway one five right"),
-            ("15R/33L", "33L", 9501, "runway three three left"),
+        for pair, end, length, spoken, lat, lon in (
+            ("10/28", "10", 10503, "runway one zero", 39.17474708, -76.689618),
+            ("10/28", "28", 10503, "runway two eight", 39.17263205, -76.65267316),
+            ("15L/33R", "15L", 5000, "runway one five left", 39.18737308, -76.66354002),
+            ("15L/33R", "33R", 5000, "runway three three right", 39.17623522, -76.65323075),
+            ("15R/33L", "15R", 9501, "runway one five right", 39.1853613, -76.68199177),
+            ("15R/33L", "33L", 9501, "runway three three left", 39.16420308, -76.66239261),
         )
     ],
     "frequencies": [
@@ -217,6 +219,7 @@ def seed(app, corpus_root: Path, offline_root: Path) -> None:
             CorpusScanner(api, config, clock=lambda: LATER).scan(key)
         response = http.put("/api/v1/airports/KBWI", json=KBWI)
         response.raise_for_status()
+        http.put("/api/v1/airports/KBWI/airspaces", json=AIRSPACES).raise_for_status()
 
     with Session(app.state.engine) as db:
         db.add_all(ArchitectureFamily(key=f, display_name=f) for f in sorted(set(MODELS.values())))
@@ -299,7 +302,44 @@ class FakeOpenSky:
             [t + 2, "a8b1c2", "AAL2669 ", 39.19, -76.67, 30.0, 35.0, 7.5, 330.0, 0.0, True, "2201", t],  # noqa: E501
             [t - 9, "a0f00d", "SWA456  ", 39.25, -76.72, 1219.2, 1250.0, 102.9, 150.0, 5.1, False, "4312", t],  # noqa: E501
         ]  # fmt: skip
+        # Earlier positions, so the map can draw trails (nearest-in-time rows above win).
+        for k in range(1, 7):
+            rows.append([t - 9 - 10 * k, "a0f00d", "SWA456  ", 39.25 + 0.009 * k,
+                         -76.72 - 0.006 * k, 1219.2 + 45 * k, None, 105.0, 150.0, -5.0,
+                         False, "4312", t])  # fmt: skip
+            rows.append([t + 2 - 8 * k, "a8b1c2", "AAL2669 ", 39.19 - 0.0012 * k,
+                         -76.67 + 0.0008 * k, 30.0, None, 7.0, 330.0, 0.0, True, "2201",
+                         t])  # fmt: skip
         return ProviderResult(list(COLUMNS), rows, {"query_id": f"fake-{self.calls}"})
+
+
+def _circle(lat: float, lon: float, radius_nm: float, n: int = 24) -> list[list[float]]:
+    import math
+
+    ring = [
+        [
+            round(
+                lon + radius_nm / 60 / math.cos(math.radians(lat)) * math.sin(2 * math.pi * i / n),
+                5,
+            ),
+            round(lat + radius_nm / 60 * math.cos(2 * math.pi * i / n), 5),
+        ]
+        for i in range(n)
+    ]
+    return [*ring, ring[0]]
+
+
+AIRSPACES = {
+    "airspaces": [
+        {"name": "E2E CLASS B CORE", "airspace_class": "B", "local_type": "CLASS_B",
+         "lower_ft": 0, "lower_ref": "SFC", "upper_ft": 10000, "upper_ref": "MSL",
+         "rings": [_circle(39.1754, -76.6683, 7.0)]},
+        {"name": "E2E CLASS D", "airspace_class": "D", "local_type": "CLASS_D",
+         "lower_ft": 0, "lower_ref": "SFC", "upper_ft": 2500, "upper_ref": "MSL",
+         "rings": [_circle(39.30, -76.60, 3.0)]},
+    ],
+    "provenance": {"source": "e2e fixture (not FAA data)"},
+}  # fmt: skip
 
 
 def main() -> None:
