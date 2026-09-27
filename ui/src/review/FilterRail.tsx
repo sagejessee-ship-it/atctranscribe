@@ -252,6 +252,12 @@ export function FilterRail({
           value={filters.span_labels}
           onChange={(span_labels) => onChange({ span_labels })}
         />
+        <TriState label="Has spans" value={filters.has_spans} onChange={(v) => onChange({ has_spans: v })} />
+        <TriState
+          label="Partial usable"
+          value={filters.partial_usable}
+          onChange={(v) => onChange({ partial_usable: v })}
+        />
       </Group>
 
       <Group title="Models">

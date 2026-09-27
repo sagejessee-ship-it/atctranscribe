@@ -40,6 +40,8 @@ export interface ReviewFilters {
   has_error_or_abstention?: boolean | null;
   flags?: string[];
   span_labels?: TrainingLabel[];
+  has_spans?: boolean | null;
+  partial_usable?: boolean | null;
   sample_id?: number | null;
   q?: string | null;
   scope?: SearchScope;
@@ -300,4 +302,42 @@ export interface SampleView {
   total_matching: number;
   segment_ids: number[];
   created_at: string;
+}
+
+// --- training datasets (src/aerochorus/dataset_contracts.py) ---------------------------
+
+export type SplitGrouping = "utc_day_channel" | "utc_day" | "segment";
+
+export interface DatasetCreate {
+  name: string;
+  description?: string | null;
+  labels: TrainingLabel[];
+  scopes: ("segment" | "span")[];
+  filters?: ReviewFilters | null;
+  split: { group_by: SplitGrouping; seed: number; train: number; validation: number; test: number };
+  include_spans_of_included_segments?: boolean;
+  created_by?: string | null;
+}
+
+export interface DatasetView {
+  id: number;
+  name: string;
+  version: number;
+  description: string | null;
+  status: "frozen" | "exported";
+  created_at: string;
+  created_by: string | null;
+  definition: Record<string, unknown>;
+  definition_sha256: string;
+  manifest_sha256: string;
+  item_count: number;
+  audio_ms_total: number;
+  counts: Record<string, Record<string, number>>;
+  export: Record<string, unknown> | null;
+}
+
+export interface TrainingSummary {
+  by_label: { label: TrainingLabel; scope: "segment" | "span"; items: number; audio_ms: number }[];
+  by_channel: { channel: string | null; label: TrainingLabel; items: number }[];
+  by_day: { day: string | null; label: TrainingLabel; items: number }[];
 }

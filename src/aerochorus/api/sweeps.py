@@ -41,6 +41,7 @@ from aerochorus.db.models import (
 from aerochorus.sweep_contracts import (
     CatalogSync,
     CatalogSyncResult,
+    ModelLineage,
     ModelRead,
     ModelRunFinish,
     ModelRunStart,
@@ -48,6 +49,8 @@ from aerochorus.sweep_contracts import (
     ModelUpdate,
     PendingBatch,
     PendingSegment,
+    QualificationGate,
+    QualificationRecord,
     ReflagResult,
     ResultAck,
     ResultPost,
@@ -119,6 +122,7 @@ def model_read(model: Model) -> ModelRead:
         request_params=model.request_params,
         capabilities=model.capabilities,
         pedigree=model.pedigree,
+        qualification=model.qualification or {},
         enabled=model.enabled,
         sweep_eligible=model.sweep_eligible,
         experimental=model.experimental,
@@ -148,7 +152,9 @@ def sync_catalog(session: Session, body: CatalogSync) -> CatalogSyncResult:
             raise Invalid(
                 f"{entry.logical_name}: unknown architecture family {entry.architecture_family!r}"
             )
-        values = entry.model_dump(exclude={"artifact_repo"}) | {"artifact_uri": entry.artifact_uri}
+        values = entry.model_dump(exclude={"artifact_repo", "artifact_url"}) | {
+            "artifact_uri": entry.artifact_uri
+        }
         existing = session.scalar(select(Model).where(Model.logical_name == entry.logical_name))
         if existing is None:
             session.add(Model(**values, sweep_eligible=False))
@@ -188,10 +194,47 @@ def sync_catalog(session: Session, body: CatalogSync) -> CatalogSyncResult:
     )
 
 
+def missing_gates(model: Model) -> list[str]:
+    """Gates a custom fine-tuned model (one with a lineage) has not passed (ADR-019)."""
+    if "lineage" not in (model.pedigree or {}):
+        return []
+    record = model.qualification or {}
+    return [g.value for g in QualificationGate if not record.get(g.value, {}).get("passed")]
+
+
 def update_model(session: Session, logical_name: str, body: ModelUpdate) -> Model:
     model = load_model(session, logical_name)
+    if body.sweep_eligible and (missing := missing_gates(model)):
+        raise Conflict(
+            f"{logical_name} is a converted fine-tune; it becomes sweep-eligible only after "
+            f"every qualification gate passes (missing: {', '.join(missing)})"
+        )
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(model, field, value)
+    session.flush()
+    return model
+
+
+def record_qualification(session: Session, logical_name: str, body: QualificationRecord) -> Model:
+    """Record one gate's outcome; a failed gate revokes sweep eligibility."""
+    model = load_model(session, logical_name)
+    if body.gate == QualificationGate.ARTIFACT_HASH and body.passed and not model.model_sha256:
+        raise Invalid(f"{logical_name} has no model_sha256 to attest")
+    if body.gate == QualificationGate.PEDIGREE and body.passed:
+        lineage = (model.pedigree or {}).get("lineage")
+        if lineage is None:
+            raise Invalid(f"{logical_name} has no pedigree.lineage")
+        ModelLineage.model_validate(lineage)
+    model.qualification = (model.qualification or {}) | {
+        body.gate.value: {
+            "passed": body.passed,
+            "at": utcnow().isoformat(),
+            "by": body.by,
+            "evidence": body.evidence,
+        }
+    }
+    if not body.passed and missing_gates(model):
+        model.sweep_eligible = False
     session.flush()
     return model
 

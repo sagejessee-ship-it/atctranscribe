@@ -14,7 +14,7 @@ segment 1 ── * annotation_thread (scope: segment | span)
 
 | column | notes |
 | --- | --- |
-| `start_ms`, `end_ms` | Null for whole-segment threads. For spans (5B), `0 ≤ start < end ≤ duration`. |
+| `start_ms`, `end_ms` | Null for whole-segment threads. For spans, `0 ≤ start < end ≤ duration` (+50 ms tolerance). See ADR-018. |
 | `text` | The transcript this version asserts. It may be null (for example "reviewed, rejected"). |
 | `text_origin` | `human` (typed, or a hypothesis accepted by a human) or `model_consensus` (batch nomination). |
 | `review_status` | `unreviewed` · `reviewed` · `corrected` |
@@ -61,3 +61,16 @@ annotation".
 
 "Human" search scope matches the **current** version of any thread: the
 whole segment or a span. Older versions stay in the history but do not match.
+
+## Spans (Phase 5B)
+
+- A span is a thread with `scope = 'span'`. Each save is a version with its
+  own bounds, text and label. Moving the region on the waveform and saving
+  records new bounds, and history keeps the old ones.
+- A span's label is independent of the parent's. The usual partial-gold case
+  is: the parent is `rejected` or unreviewed, and a span is `gold`.
+- Filters: `span_labels` (a span has the label), `has_spans`, and
+  `partial_usable`, meaning a gold/silver span on a parent that is not
+  itself gold/silver. There is a built-in "Partial usable" view.
+- Datasets include spans as `scope = span` items. The export trims the
+  parent audio to the bounds (see TRAINING_DATASET_LIFECYCLE.md).

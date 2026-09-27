@@ -9,14 +9,16 @@ import { ErrorBox, IconButton, Kbd } from "../components/ui";
 import { fmtDuration, fmtFreq, fmtLocal, fmtUtc } from "../lib/format";
 import { AgreementSummary } from "./AgreementSummary";
 import { AirportContext } from "./AirportContext";
-import { AudioPlayer, type AudioHandle } from "./AudioPlayer";
 import { CorrectionEditor, type EditorHandle } from "./CorrectionEditor";
 import { HypothesisTable } from "./HypothesisTable";
 import { NeighborContext } from "./NeighborContext";
+import { SpanPanel } from "./SpanPanel";
+import { WaveformEditor, type AudioHandle, type SpanSelection } from "./WaveformEditor";
 
 export interface InspectorCommands {
   togglePlay(): void;
   replay(): void;
+  toggleLoop(): void;
   focusCorrection(): void;
   useSelectedHypothesis(): void;
   markSilver(): void;
@@ -108,17 +110,22 @@ export function SegmentInspector({
   const player = useRef<AudioHandle>(null);
   const editor = useRef<EditorHandle>(null);
   const [selectedHyp, setSelectedHyp] = useState<string | null>(null);
+  const [span, setSpan] = useState<SpanSelection | null>(null);
 
   const baseline = useMemo(() => {
     if (!segment) return null;
     return segment.hypotheses.find((h) => h.result_id === selectedHyp) ?? defaultHypothesis(segment);
   }, [segment, selectedHyp]);
-  useEffect(() => setSelectedHyp(null), [segmentId]);
+  useEffect(() => {
+    setSelectedHyp(null);
+    setSpan(null);
+  }, [segmentId]);
 
   useEffect(() => {
     commands.current = {
       togglePlay: () => player.current?.toggle(),
       replay: () => player.current?.replay(),
+      toggleLoop: () => player.current?.toggleLoop(),
       focusCorrection: () => editor.current?.focus(),
       useSelectedHypothesis: () => baseline?.text && editor.current?.useText(baseline.text),
       markSilver: () => editor.current?.markSilver(),
@@ -158,7 +165,14 @@ export function SegmentInspector({
   return (
     <div className="inspector" aria-label={`Segment ${segment.segment_id}`}>
       <Identity segment={segment} onPrev={onPrev} onNext={onNext} />
-      <AudioPlayer ref={player} segmentId={segment.segment_id} durationMs={segment.duration_ms} />
+      <WaveformEditor
+        ref={player}
+        segmentId={segment.segment_id}
+        durationMs={segment.duration_ms}
+        spans={segment.span_annotations}
+        selection={span}
+        onSelection={setSpan}
+      />
       <AgreementSummary agreement={segment.agreement} />
       <HypothesisTable
         hypotheses={segment.hypotheses}
@@ -167,6 +181,7 @@ export function SegmentInspector({
         onUse={(text) => editor.current?.useText(text, true)}
       />
       <CorrectionEditor ref={editor} segment={segment} baseline={baseline} onSaved={onToast} />
+      <SpanPanel segment={segment} selection={span} baseline={baseline} onSelection={setSpan} onSaved={onToast} />
       <NeighborContext neighbors={segment.neighbors} onOpen={onOpen} onBeforePlay={() => player.current?.pause()} />
       <AirportContext profile={segment.airport_profile} frequencyHz={segment.frequency_hz} />
     </div>

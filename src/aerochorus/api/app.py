@@ -1,7 +1,16 @@
 from fastapi import FastAPI
 
 from aerochorus import __version__
-from aerochorus.api.routes import evaluation, health, review, scans, sources, sweeps, workers
+from aerochorus.api.routes import (
+    datasets,
+    evaluation,
+    health,
+    review,
+    scans,
+    sources,
+    sweeps,
+    workers,
+)
 from aerochorus.db.session import make_engine, make_sessionmaker
 from aerochorus.settings import ControlPlaneSettings, get_settings
 
@@ -20,4 +29,5 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     app.include_router(sweeps.router, prefix="/api/v1")
     app.include_router(evaluation.router, prefix="/api/v1")
     app.include_router(review.router, prefix="/api/v1")
+    app.include_router(datasets.router, prefix="/api/v1")
     return app

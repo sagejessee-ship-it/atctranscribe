@@ -135,6 +135,10 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
           case "R":
             c?.replay();
             return true;
+          case "l":
+          case "L":
+            c?.toggleLoop();
+            return true;
           case "c":
           case "C":
             c?.focusCorrection();

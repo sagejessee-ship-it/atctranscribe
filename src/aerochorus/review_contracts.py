@@ -102,6 +102,9 @@ class ReviewFilters(BaseModel):
     has_error_or_abstention: bool | None = None
     flags: list[str] = Field(default_factory=list)  # any of these quality flags
     span_labels: list[TrainingLabel] = Field(default_factory=list)  # has a span with label
+    has_spans: bool | None = None
+    # The whole segment is not gold/silver, but a span of it is: a partially usable recording.
+    partial_usable: bool | None = None
     sample_id: int | None = None
     q: str | None = None
     scope: SearchScope = SearchScope.ANY

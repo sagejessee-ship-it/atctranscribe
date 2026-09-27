@@ -70,5 +70,8 @@ export function describeFilters(
       clear: drop("has_error_or_abstention"),
     });
   list("flags", "flag");
+  if (f.has_spans != null) chips.push({ key: "has_spans", label: `has spans: ${tri(f.has_spans)}`, clear: drop("has_spans") });
+  if (f.partial_usable != null)
+    chips.push({ key: "partial_usable", label: `partial usable: ${tri(f.partial_usable)}`, clear: drop("partial_usable") });
   return chips;
 }

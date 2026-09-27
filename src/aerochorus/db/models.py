@@ -694,3 +694,69 @@ class AirportAlias(Base):
         ),
         Index("ix_airport_alias_lookup", "kind", "alias"),
     )
+
+
+# --- training datasets (Phase 5B) ------------------------------------------------------------
+
+
+class TrainingDataset(Base):
+    """A frozen, versioned selection of human annotations (never edited after creation)."""
+
+    __tablename__ = "training_dataset"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(Integer)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'frozen'"))
+    definition: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    definition_sha256: Mapped[str] = mapped_column(Text)
+    manifest_sha256: Mapped[str] = mapped_column(Text)
+    item_count: Mapped[int] = mapped_column(Integer)
+    audio_ms_total: Mapped[int] = mapped_column(BigInteger)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    export: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_by: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        UniqueConstraint("name", "version"),
+        CheckConstraint("status IN ('frozen', 'exported')", name="status"),
+        CheckConstraint("manifest_sha256 ~ '^[0-9a-f]{64}$'", name="manifest_sha256_format"),
+    )
+
+
+class TrainingDatasetItem(Base):
+    """One example: an annotation version, frozen with its text, bounds and split."""
+
+    __tablename__ = "training_dataset_item"
+
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("training_dataset.id", ondelete="CASCADE"), primary_key=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    annotation_version_id: Mapped[int] = mapped_column(ForeignKey("annotation_version.id"))
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"))
+    scope: Mapped[str] = mapped_column(Text)
+    start_ms: Mapped[int | None] = mapped_column(Integer)
+    end_ms: Mapped[int | None] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    training_label: Mapped[str] = mapped_column(Text)
+    text_origin: Mapped[str | None] = mapped_column(Text)
+    source_sha256: Mapped[str | None] = mapped_column(Text)
+    split: Mapped[str] = mapped_column(Text)
+    split_group: Mapped[str] = mapped_column(Text)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    clip_path: Mapped[str | None] = mapped_column(Text)
+    clip_sha256: Mapped[str | None] = mapped_column(Text)
+    clip_bytes: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "annotation_version_id"),
+        CheckConstraint("split IN ('train', 'validation', 'test')", name="split"),
+        CheckConstraint("scope IN ('segment', 'span')", name="scope"),
+        CheckConstraint(
+            "training_label IN ('gold', 'silver', 'candidate')", name="trainable_label"
+        ),
+        Index("ix_training_dataset_item_segment", "segment_id"),
+    )

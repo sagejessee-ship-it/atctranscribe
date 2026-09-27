@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aerochorus.corpus.paths import normalize_relative_dir
 
@@ -53,6 +53,45 @@ class CatalogFamily(BaseModel):
     description: str | None = None
 
 
+class ModelLineage(BaseModel):
+    """How a custom fine-tuned model was made and converted for CrispASR (ADR-019).
+
+    Stored as ``model.pedigree["lineage"]``. The converted GGUF itself is the
+    model artifact (``model_filename`` / ``model_sha256`` / ``quantization``).
+    """
+
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    base_model: str  # registry logical name (or upstream id) of the parent
+    fine_tune_dataset: str  # "<name> v<version>" from /training
+    fine_tune_dataset_manifest_sha256: str = Field(pattern=_SHA256)
+    training_run: str  # run id, path or URL of the training job
+    native_checkpoint_uri: str
+    native_checkpoint_sha256: str = Field(pattern=_SHA256)
+    converter: str  # e.g. "CrispASR models/convert-parakeet-to-gguf.py"
+    converter_version: str  # version or commit
+    crispasr_version: str  # pinned CrispASR version/commit that must load it
+
+
+class QualificationGate(StrEnum):
+    """Re-incorporation gate: every step must pass before a fine-tune can join sweeps."""
+
+    CONVERSION = "conversion"
+    ARTIFACT_HASH = "artifact_hash"
+    CRISPASR_LOAD = "crispasr_load"
+    SMOKE = "smoke"
+    USABILITY = "usability"
+    REGRESSION = "regression"
+    PEDIGREE = "pedigree"
+
+
+class QualificationRecord(BaseModel):
+    gate: QualificationGate
+    passed: bool
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    by: str | None = None
+
+
 class CatalogModel(BaseModel):
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
@@ -60,7 +99,10 @@ class CatalogModel(BaseModel):
     architecture_family: str
     crisp_backend: str
     upstream_model: str
-    artifact_repo: str
+    # Hugging Face repo of the artifact, or `artifact_url` for anything else
+    # (e.g. a locally converted fine-tune served from the lab, ADR-019).
+    artifact_repo: str | None = None
+    artifact_url: str | None = None
     upstream_revision: str
     model_filename: str
     model_sha256: str = Field(pattern=_SHA256)
@@ -73,8 +115,18 @@ class CatalogModel(BaseModel):
     enabled: bool = True
     experimental: bool = True
 
+    @model_validator(mode="after")
+    def _artifact_and_lineage(self) -> CatalogModel:
+        if not (self.artifact_repo or self.artifact_url):
+            raise ValueError(f"{self.logical_name}: artifact_repo or artifact_url is required")
+        if "lineage" in self.pedigree:
+            ModelLineage.model_validate(self.pedigree["lineage"])
+        return self
+
     @property
     def artifact_uri(self) -> str:
+        if self.artifact_url:
+            return self.artifact_url
         return (
             f"https://huggingface.co/{self.artifact_repo}/resolve/"
             f"{self.upstream_revision}/{self.model_filename}"
@@ -117,6 +169,7 @@ class ModelRead(BaseModel):
     request_params: dict[str, str]
     capabilities: dict[str, Any]
     pedigree: dict[str, Any]
+    qualification: dict[str, Any] = Field(default_factory=dict)
     enabled: bool
     sweep_eligible: bool
     experimental: bool

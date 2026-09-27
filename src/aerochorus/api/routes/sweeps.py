@@ -19,6 +19,7 @@ from aerochorus.sweep_contracts import (
     ModelRunStart,
     ModelUpdate,
     PendingBatch,
+    QualificationRecord,
     ReflagResult,
     ResultAck,
     ResultPost,
@@ -80,6 +81,12 @@ def get_model(name: str, session: SessionDep) -> ModelRead:
 @router.patch("/models/{name}", response_model=ModelRead)
 def patch_model(name: str, body: ModelUpdate, session: SessionDep) -> ModelRead:
     return svc.model_read(_call(session, lambda: svc.update_model(session, name, body)))
+
+
+@router.post("/models/{name}/qualification", response_model=ModelRead)
+def record_qualification(name: str, body: QualificationRecord, session: SessionDep) -> ModelRead:
+    """Record one re-incorporation gate for a converted fine-tune (ADR-019)."""
+    return svc.model_read(_call(session, lambda: svc.record_qualification(session, name, body)))
 
 
 @router.get("/suites", response_model=list[SuiteRead])

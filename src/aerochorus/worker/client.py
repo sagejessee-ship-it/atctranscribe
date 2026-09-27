@@ -21,6 +21,7 @@ from aerochorus.contracts import (
     WorkerHeartbeat,
     WorkerRead,
 )
+from aerochorus.dataset_contracts import DatasetItem, DatasetView, ExportReport
 from aerochorus.sweep_contracts import (
     CatalogSync,
     CatalogSyncResult,
@@ -31,6 +32,7 @@ from aerochorus.sweep_contracts import (
     ModelRunStart,
     ModelUpdate,
     PendingBatch,
+    QualificationRecord,
     ResultAck,
     ResultPost,
     SuiteRead,
@@ -119,6 +121,33 @@ class ApiClient:
     def get_airport(self, icao: str) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/airports/{icao}")
 
+    def get_dataset(self, dataset_id: int) -> DatasetView:
+        return DatasetView.model_validate(self._request("GET", f"/api/v1/datasets/{dataset_id}"))
+
+    def dataset_items(
+        self, dataset_id: int, offset: int = 0, limit: int = 1000
+    ) -> list[DatasetItem]:
+        data = self._request(
+            "GET",
+            f"/api/v1/datasets/{dataset_id}/items",
+            params={"offset": offset, "limit": limit},
+        )
+        return TypeAdapter(list[DatasetItem]).validate_python(data)
+
+    def record_dataset_export(self, dataset_id: int, body: ExportReport) -> DatasetView:
+        data = self._request(
+            "POST", f"/api/v1/datasets/{dataset_id}/export", json=body.model_dump(mode="json")
+        )
+        return DatasetView.model_validate(data)
+
+    def create_dataset(self, body: dict) -> DatasetView:
+        return DatasetView.model_validate(self._request("POST", "/api/v1/datasets", json=body))
+
+    def list_datasets(self) -> list[DatasetView]:
+        return TypeAdapter(list[DatasetView]).validate_python(
+            self._request("GET", "/api/v1/datasets")
+        )
+
     def source_summary(self, key: str) -> SourceSummary:
         data = self._request("GET", f"/api/v1/sources/{key}/summary")
         return SourceSummary.model_validate(data)
@@ -174,6 +203,12 @@ class ApiClient:
     def update_model(self, name: str, body: ModelUpdate) -> ModelRead:
         data = self._request(
             "PATCH", f"/api/v1/models/{name}", json=body.model_dump(exclude_none=True)
+        )
+        return ModelRead.model_validate(data)
+
+    def record_qualification(self, name: str, body: QualificationRecord) -> ModelRead:
+        data = self._request(
+            "POST", f"/api/v1/models/{name}/qualification", json=body.model_dump(mode="json")
         )
         return ModelRead.model_validate(data)
 

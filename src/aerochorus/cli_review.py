@@ -122,7 +122,110 @@ def cmd_ui_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dataset_create(args: argparse.Namespace) -> int:
+    body = {
+        "name": args.name,
+        "description": args.description,
+        "labels": args.labels.split(","),
+        "scopes": args.scopes.split(","),
+        "split": {
+            "group_by": args.group_by,
+            "seed": args.seed,
+            **dict(
+                zip(("train", "validation", "test"), map(float, args.split.split(",")), strict=True)
+            ),
+        },
+        "include_spans_of_included_segments": args.include_nested_spans,
+        "created_by": args.created_by,
+    }
+    if args.filters:
+        body["filters"] = json.loads(args.filters)
+    with _client(args) as client:
+        dataset = client.create_dataset(body)
+    print(
+        f"dataset {dataset.id}: {dataset.name} v{dataset.version} — {dataset.item_count} items, "
+        f"{dataset.audio_ms_total / 60000:.1f} min, splits {dataset.counts.get('by_split')}, "
+        f"manifest {dataset.manifest_sha256[:16]}…"
+    )
+    return 0
+
+
+def cmd_dataset_list(args: argparse.Namespace) -> int:
+    from aerochorus.cli_transcription import _table
+
+    with _client(args) as client:
+        rows = [
+            {
+                "id": d.id,
+                "name": d.name,
+                "v": d.version,
+                "status": d.status.value,
+                "items": d.item_count,
+                "minutes": f"{d.audio_ms_total / 60000:.1f}",
+                "splits": " ".join(
+                    f"{k}={v}" for k, v in sorted(d.counts.get("by_split", {}).items())
+                ),
+                "manifest": d.manifest_sha256[:12],
+            }
+            for d in client.list_datasets()
+        ]
+    print(_table(rows, ["id", "name", "v", "status", "items", "minutes", "splits", "manifest"]))
+    return 0
+
+
+def cmd_dataset_export(args: argparse.Namespace) -> int:
+    from aerochorus.worker.config import load_worker_config
+    from aerochorus.worker.dataset_export import ExportError, export_dataset
+
+    config = load_worker_config(args.config)
+    with _client(args) as client:
+        try:
+            result = export_dataset(
+                client, config, args.id, args.out, ffmpeg=args.ffmpeg, exported_by=args.exported_by
+            )
+        except ExportError as exc:
+            print(f"export failed: {exc}")
+            return 1
+    print(
+        f"exported {result.clips} clips ({result.audio_ms / 60000:.1f} min) to {result.directory}; "
+        f"clips sha256 {result.dataset.export['clips_sha256'][:16]}…, "
+        f"manifest sha256 {result.dataset.export['manifest_file_sha256'][:16]}…"
+    )
+    return 0
+
+
 def register(groups, api_opt) -> None:
+    dataset = groups.add_parser("dataset", help="versioned training datasets").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = dataset.add_parser("create", help="freeze current annotations into a new dataset version")
+    p.add_argument("name")
+    p.add_argument("--description")
+    p.add_argument("--labels", default="gold", help="comma list of gold,silver,candidate")
+    p.add_argument("--scopes", default="segment,span")
+    p.add_argument("--split", default="0.8,0.1,0.1", help="train,validation,test ratios")
+    p.add_argument(
+        "--group-by", default="utc_day_channel", choices=["utc_day_channel", "utc_day", "segment"]
+    )
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--filters", help="JSON review filters restricting parent segments")
+    p.add_argument("--include-nested-spans", action="store_true")
+    p.add_argument("--created-by")
+    api_opt(p)
+    p.set_defaults(func=cmd_dataset_create)
+    p = dataset.add_parser("list", help="dataset versions")
+    api_opt(p)
+    p.set_defaults(func=cmd_dataset_list)
+    p = dataset.add_parser(
+        "export", help="materialize clip audio + manifest (needs the corpus and ffmpeg)"
+    )
+    p.add_argument("id", type=int)
+    p.add_argument("--out", type=Path, required=True, help="export root (never inside a source)")
+    p.add_argument("--ffmpeg", help="ffmpeg binary (default: PATH or AEROCHORUS_FFMPEG)")
+    p.add_argument("--exported-by")
+    api_opt(p)
+    p.set_defaults(func=cmd_dataset_export)
+
     airport = groups.add_parser("airport", help="airport context profiles").add_subparsers(
         dest="cmd", required=True
     )

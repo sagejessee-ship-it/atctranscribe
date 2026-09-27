@@ -125,3 +125,28 @@ adds `corpus_source.role ∈ {corpus, benchmark}`:
 - **Results from the running sweep-6 API** (pre-0004 code on :8001) do not
   refresh agreement inline. Run `aerochorus agreement refresh` after that
   sweep ends.
+
+## Status: Phase 5B complete (2026-09-27)
+
+| # | 5B acceptance criterion | Evidence |
+| --- | --- | --- |
+| 1 | Waveform renders real audio | WaveSurfer on the edge's `/audio`; checked on real NAS audio and in E2E "partial gold" |
+| 2 | User can drag a region | E2E: mouse drag on the waveform creates the draft region and readout |
+| 3 | Region loops correctly | E2E: with loop on, 8 samples of the playback position all stay within the span |
+| 4 | Bounds persist after reload | E2E: reload, then the span list shows `0.30–0.90`, and selecting it restores the region |
+| 5 | Gold span coexists with a non-gold parent | E2E: gold span plus rejected parent; the "Partial usable" view finds it; `test_partial_usable_and_span_search` |
+| 6 | Span transcript is searchable | `test_partial_usable_and_span_search` ("human" scope) |
+| 7 | Export creates derived clipped audio | `test_export_materializes_clips_and_never_touches_sources` (real ffmpeg) |
+| 8 | Parent source hash unchanged | same test: corpus snapshot before = after; export refuses a changed source |
+| 9 | Optional re-transcription keeps parent/offset provenance | **Deferred** (ADR-018 records the design) |
+| 10 | Annotation history is auditable | append-only versions for segments and spans; history in both editors |
+
+Also delivered with 5B:
+
+- versioned datasets (`training_dataset`, `training_dataset_item`,
+  migration 0005);
+- the `/training` page;
+- `dataset create/list/export`;
+- ADR-019 lineage plus the qualification gate (`models qualify`,
+  `test_model_lineage.py`).
+

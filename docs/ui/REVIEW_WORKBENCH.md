@@ -52,9 +52,14 @@ The inspector sections, top to bottom:
 1. **Identity**: UTC, local time and zone, airport, frequency and the
    channel's service from the airport profile, duration, id and path,
    prev/next.
-2. **Audio**: play/pause, replay, seek, time, rate, volume, and "autoplay on
-   open". Audio comes from `/audio/{id}` on the edge. If it fails, the edge's
-   reason is shown with a Retry button.
+2. **Waveform** (WaveSurfer.js), with the audio fetched from the edge's
+   `/audio/{id}`:
+   - timeline, hover time, zoom, rate and volume;
+   - drag to select a span; drag the edges to adjust it;
+   - click a region to play it, and loop it with `L`;
+   - a start/end readout, and "clear selection".
+
+   If the audio fails, the edge's reason is shown with a Retry button.
 3. **Agreement**:
    - counts (results, spoken, abstained, errors, families);
    - exact groups (G1…), each with families·providers, text and providers;
@@ -69,10 +74,15 @@ The inspector sections, top to bottom:
 5. **Human annotation**: the correction textarea, a word diff against the
    selected hypothesis, the training label, reason tags and notes, and
    Save/Silver/Gold/Reject. It also shows version history.
-6. **Neighbor context**: previous and next segments on the same channel,
+6. **Spans**:
+   - the saved spans on this segment (bounds, label, text, version);
+   - an editor for the selected or new span: exact start/end ms, transcript,
+     "prefill from hypothesis", label, notes, and version history;
+   - gold needs its own confirmation.
+7. **Neighbor context**: previous and next segments on the same channel,
    plus other channels within ±60 s. Each has a relative time, a preview, a
    play button and an open button. This is context only.
-7. **Airport context** (collapsed): identifiers, reference point, runway
+8. **Airport context** (collapsed): identifiers, reference point, runway
    ends with spoken forms, voice frequencies (the current channel is
    highlighted), and provenance.
 
@@ -89,7 +99,7 @@ The inspector sections, top to bottom:
 | Exact providers ≥ N, exact families ≥ N, ≤ N | `min_exact_providers`, `min_exact_families`, `max_exact_families` |
 | Near families ≥ N, near similarity ≥ X | `min_near_families`, `min_near_similarity` |
 | Review status, training label | `review_status`, `training_label` |
-| Has a span with label | `span_labels` |
+| Has a span with label, has spans, partial usable | `span_labels`, `has_spans`, `partial_usable` |
 | Error, abstention, flags | `has_error`, `has_abstention`, `has_error_or_abstention`, `flags` |
 | Sources, include benchmark | `source_keys`, `include_benchmark` |
 | Sample | `sample_id` |
@@ -122,6 +132,7 @@ tie-break.
 | Silver candidates | `training_label=[candidate, silver]` |
 | Gold verified | `training_label=[gold]` |
 | Disagreement / needs review | `min_success=2`, `max_exact_families=1`, `max_near_families=1` |
+| Partial usable (gold/silver spans) | `partial_usable=true`, `min_models=0` |
 | ASR errors or abstentions | `has_error_or_abstention=true` |
 
 ## Keyboard
@@ -134,7 +145,8 @@ focus to the grid.
 | Space | play/pause |
 | J / ↑ | previous segment (pages back at the top) |
 | K / ↓ | next segment (pages forward at the bottom) |
-| R | replay from the start |
+| R | replay the selected span, or from the start |
+| L | loop the selected span on/off |
 | C | focus the correction editor |
 | A | use the selected hypothesis as the starting text (keeps focus, so S/K follow) |
 | S | mark silver |
@@ -149,6 +161,13 @@ J/K follow the order in the design brief ("J/K: previous/next").
 
 **Fast path:** pick a view, then K, Space, listen, then A and S (or C to
 correct first), then K again.
+
+**Partial gold:**
+
+1. Drag over the clean phrase and press L.
+2. Listen, then type the span transcript.
+3. Choose Gold, then "Save new span" and confirm.
+4. X rejects the parent if it is unusable.
 
 ## Sampling
 

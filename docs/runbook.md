@@ -714,3 +714,21 @@ uv run aerochorus ui serve                          # → http://127.0.0.1:8080/
   `agreement refresh` after a threshold change
   (`AEROCHORUS_NEAR_MATCH_THRESHOLD`), an algorithm version bump, or results
   recorded by a pre-0004 API.
+
+### Training datasets (Phase 5B)
+
+Details: [docs/ui/TRAINING_DATASET_LIFECYCLE.md](ui/TRAINING_DATASET_LIFECYCLE.md).
+
+```bash
+uv run aerochorus dataset create bwi-atc --labels gold,silver     # freeze a version (grouped, seeded split)
+uv run aerochorus dataset list
+uv run aerochorus dataset export <id> --out ~/aerochorus-data/datasets   # needs the corpus + ffmpeg
+```
+
+### Custom fine-tuned models (ADR-019)
+
+```bash
+uv run aerochorus models sync                                     # models.toml entry with pedigree.lineage + artifact_url
+uv run aerochorus models qualify <name> smoke --passed --evidence '{"sweep": 12}'
+uv run aerochorus models set <name> --eligible                    # refused until all 7 gates pass
+```

@@ -89,6 +89,22 @@ def cmd_models_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_models_qualify(args: argparse.Namespace) -> int:
+    from aerochorus.sweep_contracts import QualificationRecord
+
+    body = QualificationRecord(
+        gate=args.gate,
+        passed=args.passed,
+        evidence=json.loads(args.evidence) if args.evidence else {},
+        by=args.by,
+    )
+    with _client(args) as client:
+        model = client.record_qualification(args.name, body)
+    gates = {k: ("pass" if v.get("passed") else "FAIL") for k, v in model.qualification.items()}
+    _emit(args, model, f"{model.logical_name}: {gates} eligible={model.sweep_eligible}")
+    return 0
+
+
 def cmd_models_set(args: argparse.Namespace) -> int:
     from aerochorus.sweep_contracts import ModelUpdate
 
@@ -462,6 +478,25 @@ def register(groups: argparse._SubParsersAction, api_opt) -> None:
     api_opt(p)
     json_opt(p)
     p.set_defaults(func=cmd_models_list)
+    p = models.add_parser(
+        "qualify", help="record a re-incorporation gate for a converted fine-tune (ADR-019)"
+    )
+    p.add_argument("name")
+    p.add_argument(
+        "gate",
+        choices=[
+            "conversion", "artifact_hash", "crispasr_load", "smoke", "usability", "regression",
+            "pedigree",
+        ],
+    )  # fmt: skip
+    outcome = p.add_mutually_exclusive_group(required=True)
+    outcome.add_argument("--passed", dest="passed", action="store_true")
+    outcome.add_argument("--failed", dest="passed", action="store_false")
+    p.add_argument("--evidence", help="JSON: sweep id, report path, metrics, commit...")
+    p.add_argument("--by")
+    api_opt(p)
+    json_opt(p)
+    p.set_defaults(func=cmd_models_qualify)
     p = models.add_parser("set", help="enable/disable a model or mark it sweep-eligible")
     p.add_argument("name")
     group = p.add_mutually_exclusive_group()

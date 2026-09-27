@@ -1,5 +1,8 @@
 import type {
   AnnotationSave,
+  DatasetCreate,
+  DatasetView,
+  TrainingSummary,
   AnnotationThread,
   BatchOutcome,
   BatchRequest,
@@ -67,6 +70,9 @@ export const api = {
   createSample: (body: { filters: ReviewFilters; n: number; seed: number; name?: string }) =>
     request<SampleView>("POST", "/api/v1/review/samples", body),
   sample: (id: number) => request<SampleView>("GET", `/api/v1/review/samples/${id}`),
+  trainingSummary: () => request<TrainingSummary>("GET", "/api/v1/training/summary"),
+  datasets: () => request<DatasetView[]>("GET", "/api/v1/datasets"),
+  createDataset: (body: DatasetCreate) => request<DatasetView>("POST", "/api/v1/datasets", body),
 };
 
 export const audioUrl = (segmentId: number) => `/audio/${segmentId}`;

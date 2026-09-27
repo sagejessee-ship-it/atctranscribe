@@ -22,6 +22,7 @@ def test_worker_never_loads_the_database_layer():
         "import sys\n"
         "import aerochorus.cli, aerochorus.worker.daemon, aerochorus.worker.scanner\n"
         "import aerochorus.worker.health, aerochorus.worker.client, aerochorus.edge.server\n"
+        "import aerochorus.worker.dataset_export\n"
         "bad = [m for m in sys.modules if m.split('.')[0] in ('sqlalchemy', 'alembic', 'psycopg')"
         " or m.startswith(('aerochorus.db', 'aerochorus.api'))]\n"
         "assert not bad, bad\n"
@@ -33,7 +34,14 @@ def test_worker_never_loads_the_database_layer():
 # The only modules allowed to write files, each to its own configured root:
 # model artifacts, raw CrispASR output (ADR-004), CrispASR server logs, and
 # benchmark clip preparation (writes a new derived corpus; never touches input).
-WRITERS = {"model_store.py", "artifacts.py", "crispasr.py", "atco2.py", "faa_nasr.py"}
+WRITERS = {
+    "model_store.py",
+    "artifacts.py",
+    "crispasr.py",
+    "atco2.py",
+    "faa_nasr.py",
+    "dataset_export.py",
+}
 
 
 def test_source_audio_cannot_be_modified():
@@ -135,13 +143,13 @@ def test_exactly_one_architecture_family_registry():
 
 
 def test_no_jsonl_operational_datastore():
-    """ADR-003: PostgreSQL is authoritative; JSONL is export-only (none exists yet)."""
+    """ADR-003: PostgreSQL is authoritative; JSONL is export-only (dataset export)."""
     offenders = [
         path.relative_to(SRC).as_posix()
         for path in SRC.rglob("*.py")
         if "jsonl" in path.read_text(encoding="utf-8").lower()
     ]
-    assert offenders == []
+    assert offenders == ["worker/dataset_export.py"]
 
 
 def test_source_rows_are_read_only_by_construction():

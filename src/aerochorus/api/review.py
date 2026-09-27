@@ -69,6 +69,8 @@ from aerochorus.review_contracts import (
     TrainingLabel,
 )
 
+USABLE = (TrainingLabel.GOLD.value, TrainingLabel.SILVER.value)
+
 # Representative-text sources that count as independent agreement (atc/agreement.py).
 SILVER_SOURCES = ("exact", "near")
 
@@ -126,6 +128,12 @@ SAVED_VIEWS = [
         name="Disagreement / needs review",
         description="2+ models produced words but no two families agree, exactly or nearly",
         filters=ReviewFilters(min_success=2, max_exact_families=1, max_near_families=1),
+    ),
+    SavedView(
+        key="partial-usable",
+        name="Partial usable (gold/silver spans)",
+        description="The whole segment is not gold/silver, but a span of it is",
+        filters=ReviewFilters(partial_usable=True, min_models=0),
     ),
     SavedView(
         key="errors-abstentions",
@@ -274,6 +282,23 @@ def _apply_filters(session: Session, query: Select, f: ReviewFilters, a: _Aliase
                 version.training_label.in_([label.value for label in f.span_labels]),
             )
         )
+    if f.has_spans is not None:
+        spans = exists().where(
+            AnnotationThread.segment_id == Segment.id, AnnotationThread.scope == "span"
+        )
+        query = query.where(spans if f.has_spans else ~spans)
+    if f.partial_usable is not None:
+        thread = aliased(AnnotationThread)
+        version = aliased(AnnotationVersion)
+        usable_span = exists().where(
+            thread.segment_id == Segment.id,
+            thread.scope == "span",
+            version.id == thread.current_version_id,
+            version.training_label.in_(USABLE),
+        )
+        whole_not_usable = func.coalesce(a.version.training_label, "none").not_in(USABLE)
+        partial = and_(usable_span, whole_not_usable)
+        query = query.where(partial if f.partial_usable else ~partial)
     if f.sample_id is not None:
         sample = session.get(ReviewSample, f.sample_id)
         if sample is None:
