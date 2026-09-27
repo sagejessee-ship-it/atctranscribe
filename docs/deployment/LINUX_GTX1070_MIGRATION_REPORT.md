@@ -67,6 +67,7 @@ box with the GPU passed through:
 | web UI (review edge) | `aerochorus-edge.service` | 0.0.0.0:8080 → **LAN URL `http://<host-ip>:8080/review`** (TBD) |
 | worker + CrispASR | `aerochorus-worker.service` (native; one model resident at a time) | loopback |
 | backups | `aerochorus-backup.timer` (nightly pg_dump + critical files) | — |
+| adjudication runner (optional, paid) | `aerochorus-adjudicator.service`: installed, **not enabled**. It holds `AEROCHORUS_OPENROUTER_API_KEY` from `/etc/aerochorus/aerochorus.env` and works only on batches confirmed in the UI under a cost cap ([ADR-022](../adr/0022-model-adjudication.md)). | outbound HTTPS only |
 
 ## 5. Data migration
 
@@ -75,6 +76,28 @@ references, 1 annotation and 6 sweeps. The export, restore and verification
 scripts exist, and the round trip was **verified identical** (13 tables,
 counts and content fingerprints). See [MIGRATION.md](MIGRATION.md). The
 on-host import is TBD.
+
+The schema is now at migration **0010**:
+
+- 0009: runway-end coordinates and FAA airspace for the map;
+- 0010: adjudication batches and items, and the `model_adjudicated` text
+  origin.
+
+The import restores a dump from the Windows box at its revision, and
+`docker compose up` then applies anything newer. Re-export on migration day,
+because the test bundle's `counts.tsv` was overwritten.
+
+After the import, recreate the map geometry if the dump predates 0009:
+
+```bash
+uv run aerochorus airport bootstrap KBWI --timezone America/New_York --station BWI
+uv run aerochorus airport airspace KBWI
+```
+
+OpenSky: the account logs in, but Trino answers "Access Denied" until
+OpenSky grants historical access. The REST fallback needs an API client
+(`AEROCHORUS_OPENSKY_CLIENT_ID/SECRET`). See
+[OPENSKY_PROVIDER.md](../context/OPENSKY_PROVIDER.md).
 
 ## 6. Model qualification
 
@@ -162,6 +185,8 @@ Not attempted, and why:
   for heavy models.
 - There is no authentication on the LAN UI. It must never be port-forwarded.
 - Backups need an off-host copy to protect against disk loss.
+- Adjudication sends selected audio to OpenRouter (Google). It is off until
+  the adjudicator unit is enabled. Each batch is confirmed and capped.
 
 ## 10. To finish on the host
 

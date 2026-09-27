@@ -24,12 +24,56 @@ References:
 | item | value |
 | --- | --- |
 | Trino | `https://trino.opensky-network.org` (REST statement protocol), catalog `minio`, schema `osky` |
-| Auth | Password-grant token from `https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token` (`client_id=trino-client`), sent as `Authorization: Bearer …`. `X-Trino-User` is the **lowercase** username (as pyopensky does). |
-| Credentials | `AEROCHORUS_OPENSKY_USERNAME`, `AEROCHORUS_OPENSKY_PASSWORD` in the control plane's environment. Put them in `./.env` (gitignored); Compose passes them to the `api` service. |
+| Auth | Password-grant token from `https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token` (`client_id=trino-client`), sent as `Authorization: Bearer …`. `X-Trino-User` is the account **username** from the token's `preferred_username` claim, so you may log in with your e-mail address. |
+| Credentials | `AEROCHORUS_OPENSKY_USERNAME` (username or e-mail), `AEROCHORUS_OPENSKY_PASSWORD` in the control plane's environment. Put them in `./.env` (gitignored); Compose passes them to the `api` service. Recreate the container after changing them (`docker compose up -d api`). |
 | Browser | Never sees credentials. The flow is always browser → AeroChorus API → OpenSky. The password is a `SecretStr` and is never serialized; a test covers this. |
 
 Without credentials, the ADS-B panel says "unavailable: not configured" and
 everything else works as before.
+
+**Trino access must be granted by OpenSky.** A valid login is not enough:
+until OpenSky enables historical access for the account, Trino answers
+`Access Denied: Cannot execute query`, and the panel shows that message.
+Request access at <https://opensky-network.org/data/trino>. As of 2026-09-27
+the configured account logs in successfully but is still waiting for access.
+
+### REST fallback (API client credentials)
+
+The OpenSky REST API accepts only **OAuth2 client credentials**; basic auth
+was removed. Create an API client on your OpenSky account page ("API
+client"), then set:
+
+```bash
+AEROCHORUS_OPENSKY_CLIENT_ID=...
+AEROCHORUS_OPENSKY_CLIENT_SECRET=...
+```
+
+Tokens come from the same token endpoint (`grant_type=client_credentials`)
+and last 30 minutes. REST has no historical state vectors, so the REST
+provider reconstructs positions at the segment time:
+
+1. `/flights/arrival` and `/flights/departure` for the airport, over bounded
+   windows around the segment. These come from OpenSky's nightly batch, so
+   only days before today.
+2. Keep flights active within ±10 minutes.
+3. Fetch `/tracks/all` for at most `AEROCHORUS_ADSB_REST_MAX_TRACKS` of them
+   (default 8). Tracks reach back 30 days.
+4. Interpolate each track at the segment time. Nearby waypoints become the
+   trail.
+
+The metadata records `interpolated: true`. A standard account has 4000 REST
+credits per day, and a flights or track call costs about 30, so the track
+cap matters.
+
+### Provider selection
+
+`AEROCHORUS_ADSB_PROVIDER`:
+
+| value | behaviour |
+| --- | --- |
+| `auto` (default) | Trino when it works. If Trino is unavailable (access not granted, rejected), falls back to REST when client credentials are set. The snapshot's metadata records the provider used and why it fell back. |
+| `trino` | Trino only |
+| `rest` | REST only |
 
 ## Query model
 

@@ -8,9 +8,10 @@ never becomes gold text.
 | table | contents |
 | --- | --- |
 | `airport` | ICAO (PK), FAA id, IATA, name, city, reference lat/lon, elevation, magnetic variation, **timezone**, `provenance` JSONB |
-| `airport_runway` | one row per runway **end**: pair (`15R/33L`), end (`33L`), length, width, true alignment, spoken forms |
+| `airport_runway` | one row per runway **end**: pair (`15R/33L`), end (`33L`), length, width, true alignment, spoken forms, surveyed end latitude/longitude and elevation, displaced-threshold latitude/longitude (NASR `APT_RWY_END`) |
 | `airport_frequency` | service category (TWR, GND, CD, ATIS, APP, DEP, CLASS_B, PROC, EMERG, OTHER), Hz, facility, spoken call ("Baltimore Tower"), FAA use/sectorization, spoken digit forms |
 | `airport_alias` | alias + kind: `icao`, `faa`, `iata`, `station`, `name`, `spoken` |
+| `airport_airspace` | controlled airspace near the airport (FAA ADDS Class Airspace): name, class, floor/ceiling (ft, reference), simplified outer rings `[[lon, lat], …]`, source id, provenance |
 
 Segment → airport resolution happens on the server. `segment.station` is
 looked up in aliases of kind `station`, `faa` or `icao`. Four-letter stations
@@ -72,6 +73,31 @@ Only VHF voice frequencies (108–137 MHz) are kept. UHF military and
 remark-only rows are dropped. Calls come from NASR: `TOWER_OR_COMM_CALL` for
 the tower/ground/clearance family, and `PRIMARY_APPROACH_RADIO_CALL` for
 TRACON services.
+
+## Airspace (map context)
+
+```bash
+uv run aerochorus airport airspace KBWI --radius-nm 30 --classes B,C,D
+```
+
+This queries the FAA Aeronautical Data Delivery Service "Class Airspace"
+feature layer (ArcGIS REST, public) once, for a box of the radius around the
+reference point. It keeps the chosen classes and simplifies the polygons
+(Ramer-Douglas-Peucker, about 150 m). It then replaces the airport's rows
+through `PUT /api/v1/airports/{icao}/airspaces`.
+
+For KBWI this gives 15 areas:
+
+- the Washington Tri-Area Class B core (SFC–10,000) and its shelves (floors
+  1,500 / 2,500 / 3,000 / 3,500 / 4,500);
+- Class D at Martin State ("Baltimore"), Frederick, Easton and Fort Belvoir.
+
+FAA stacks Class B shelves: each shelf polygon covers everything inside its
+outer edge, with lower floors on top. The map therefore labels each shelf
+where its own floor is the visible one.
+
+The data is context for the map in the ADS-B panel. It is not for
+navigation.
 
 ## Refreshing
 

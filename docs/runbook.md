@@ -699,7 +699,7 @@ HAVING count(*) FILTER (WHERE t.status = 'abstained') > 0
 Details: [docs/ui/REVIEW_WORKBENCH.md](ui/REVIEW_WORKBENCH.md).
 
 ```bash
-docker compose up -d --build                        # migration 0004: agreement, annotations, airports, pg_trgm
+docker compose up -d --build                        # migrations 0004–0010 (agreement v2, map, adjudication)
 uv run aerochorus source set-role atco2_fixed benchmark
 uv run aerochorus airport bootstrap KBWI --timezone America/New_York --station BWI
 uv run aerochorus agreement refresh                 # after upgrades, or results posted by an older API
@@ -754,4 +754,46 @@ AEROCHORUS_OPENSKY_PASSWORD=<opensky password>
 Then run `docker compose up -d`. Without these, the inspector's ADS-B panel
 says "not configured" and nothing else changes. The container needs outbound
 HTTPS to `auth.opensky-network.org` and `trino.opensky-network.org`.
+
+Trino works only once OpenSky has granted historical access to the account.
+Until then the panel shows "Access Denied". For the REST fallback, create an
+API client on the OpenSky account page and add
+`AEROCHORUS_OPENSKY_CLIENT_ID` / `AEROCHORUS_OPENSKY_CLIENT_SECRET`.
+
+Map geometry, once per airport (runway ends come with the bootstrap):
+
+```bash
+uv run aerochorus airport airspace KBWI --radius-nm 30 --classes B,C,D
+```
+
+### Model adjudication (optional, paid)
+
+Details: [ADR-022](adr/0022-model-adjudication.md) and
+[REVIEW_WORKBENCH.md](ui/REVIEW_WORKBENCH.md#model-adjudication-gemini-via-openrouter).
+
+Batches are created only in the review UI (or API), each priced, capped and
+confirmed. The runner holds the key and runs where the audio is mounted:
+
+```bash
+# on the audio host, in its environment or ./.env (never the API container):
+AEROCHORUS_OPENROUTER_API_KEY=<openrouter key>
+
+uv run aerochorus adjudicate run --follow          # waits for confirmed batches
+uv run aerochorus adjudicate list                  # batches, progress, spend vs cap
+uv run aerochorus adjudicate show <batch>          # items and transcripts
+```
+
+On the Linux host, put the key in `/etc/aerochorus/aerochorus.env`, then
+run `sudo systemctl enable --now aerochorus-adjudicator.service`. The
+control plane's limits:
+
+| setting | default |
+| --- | --- |
+| `AEROCHORUS_ADJUDICATION_MODEL` | `~google/gemini-pro-latest` |
+| `AEROCHORUS_ADJUDICATION_MAX_ITEMS` | 500 per batch |
+| `AEROCHORUS_ADJUDICATION_MAX_BATCH_USD` | $25 per batch |
+| `AEROCHORUS_ADJUDICATION_MAX_AUDIO_S` | 120 s per clip |
+
+Prices come from OpenRouter's public model list. If it is unreachable, the
+`AEROCHORUS_ADJUDICATION_PRICE_*` defaults are used.
 

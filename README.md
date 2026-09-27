@@ -14,7 +14,11 @@ force are in [docs/adr/](docs/adr/README.md). **Status:** Phases 0–5 are done:
 - the review workbench (web UI);
 - partial-span annotation;
 - versioned training datasets;
-- on-demand ADS-B context.
+- utterance-level agreement within a segment (partial agreement);
+- on-demand ADS-B context on a simplified airport map (runways, FAA airspace);
+- a Transcribe page to queue runs over a chosen slice with chosen models;
+- paid model adjudication (Gemini via OpenRouter) of selected segments,
+  priced, capped and confirmed (ADR-022).
 
 **Deployment:** a Linux host with a GTX 1070 (ADR-021). See
 [docs/deployment/](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).

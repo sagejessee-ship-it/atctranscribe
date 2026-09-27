@@ -16,7 +16,7 @@ segment 1 ── * annotation_thread (scope: segment | span)
 | --- | --- |
 | `start_ms`, `end_ms` | Null for whole-segment threads. For spans, `0 ≤ start < end ≤ duration` (+50 ms tolerance). See ADR-018. |
 | `text` | The transcript this version asserts. It may be null (for example "reviewed, rejected"). |
-| `text_origin` | `human` (typed, or a hypothesis accepted by a human) or `model_consensus` (batch nomination). |
+| `text_origin` | `human` (typed, or a hypothesis accepted by a human), `model_consensus` (batch nomination), or `model_adjudicated` (an accepted model adjudication, [ADR-022](../adr/0022-model-adjudication.md)). |
 | `review_status` | `unreviewed` · `reviewed` · `corrected` |
 | `training_label` | `none` · `candidate` · `silver` · `gold` · `rejected` |
 | `reason_tags` | Free list. The UI offers: unclear audio, clipped boundary, overlapping speech, controller clear / pilot poor, noise, non-ATC, bad segmentation, multiple utterances, partial usable span, uncertain callsign, uncertain number/runway/frequency. |
@@ -42,6 +42,7 @@ Database guarantees:
 | Batch silver needs 2-family agreement (`representative_source ∈ {exact, near}`) or existing human text | `review.batch_nominate` |
 | Batch never changes current gold or human-rejected items | `review.batch_nominate` |
 | Clear only removes candidate or silver | `review.batch_nominate` |
+| Adjudicated text becomes silver at most; never over human text, human gold or a rejection; never on benchmark sources | `adjudication.accept` |
 | A source cannot become `benchmark` while it has training labels | `PATCH /sources/{key}/role` |
 
 ## How the UI maps actions
