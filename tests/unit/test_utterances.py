@@ -27,7 +27,16 @@ def test_leading_agreement_with_a_garbled_trailing_readback():
     utterances = utterance_agreement(hyps, duration_ms=6000)
     best = utterances[0]
     assert best["families"] == ["parakeet", "qwen3-asr", "whisper"]
-    assert best["tokens"] == ["southwest", "456", "turn", "left", "heading", "270", "contact", "departure"]  # noqa: E501
+    assert best["tokens"] == [
+        "southwest",
+        "456",
+        "turn",
+        "left",
+        "heading",
+        "270",
+        "contact",
+        "departure",
+    ]  # noqa: E501
     assert best["position"] == "leading" and best["bounds_estimated"] is False
     assert best["timed_by"] == ["parakeet-a"]  # the only member with word timings
     assert (best["start_ms"], best["end_ms"]) == (100, 100 + 7 * 300 + 250)
