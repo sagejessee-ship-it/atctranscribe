@@ -79,7 +79,8 @@ export const WaveformEditor = forwardRef<
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState((durationMs ?? 0) / 1000);
   const [error, setError] = useState<string | null>(null);
-  const [loop, setLoop] = useState(false);
+  // Looping is on by default: the selected span if any, otherwise the whole file.
+  const [loop, setLoop] = useState<boolean>(() => readPref("loop", true));
   const [zoom, setZoom] = useState<number>(() => readPref("zoom", 0));
   const [rate, setRate] = useState<number>(() => readPref("rate", 1));
   const [volume, setVolume] = useState<number>(() => readPref("volume", 1));
@@ -138,7 +139,12 @@ export const WaveformEditor = forwardRef<
     instance.on("timeupdate", (t) => setCurrent(t));
     instance.on("play", () => setPlaying(true));
     instance.on("pause", () => setPlaying(false));
-    instance.on("finish", () => setPlaying(false));
+    instance.on("finish", () => {
+      if (loopRef.current && !activeRef.current) {
+        instance.setTime(0);
+        instance.play().catch(() => undefined);
+      } else setPlaying(false);
+    });
     instance.on("error", () => {
       setPlaying(false);
       audioProblem(segmentId).then(setError);
@@ -226,6 +232,7 @@ export const WaveformEditor = forwardRef<
 
   useEffect(() => {
     loopRef.current = loop;
+    writePref("loop", loop);
   }, [loop]);
   useEffect(() => {
     if (ready) ws.current?.zoom(zoom);
@@ -296,7 +303,7 @@ export const WaveformEditor = forwardRef<
           <RotateCcw size={14} />
         </IconButton>
         <IconButton
-          label={loop ? "Stop looping the selection (L)" : "Loop the selection (L)"}
+          label={loop ? "Turn looping off (L): selection or whole file" : "Turn looping on (L)"}
           aria-pressed={loop}
           onClick={() => setLoop((v) => !v)}
           disabled={!ready}

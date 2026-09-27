@@ -5,7 +5,7 @@ export const SHORTCUTS: [string[], string][] = [
   [["J", "↑"], "Previous segment"],
   [["K", "↓"], "Next segment"],
   [["R"], "Replay the selected span, or from the start"],
-  [["L"], "Loop the selected span on/off"],
+  [["L"], "Looping on/off (default on: selected span, else whole file)"],
   [["C"], "Focus the correction editor"],
   [["A"], "Use the selected hypothesis as correction starting text"],
   [["S"], "Mark silver (human text if typed, else model consensus)"],

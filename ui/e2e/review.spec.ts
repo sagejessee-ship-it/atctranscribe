@@ -156,7 +156,8 @@ test("partial gold: select a waveform span, loop it, transcribe, confirm gold; s
   await expect(page.getByTestId("selection-readout")).toContainText("0.30–0.90s");
 
   // Loop the selection: playback stays inside the span.
-  await page.getByRole("button", { name: /Loop the selection/ }).click();
+  const loopButton = page.getByRole("button", { name: /Turn looping (on|off)/ });
+  if ((await loopButton.getAttribute("aria-pressed")) !== "true") await loopButton.click();
   await playButton(page).click();
   const seen: number[] = [];
   for (let i = 0; i < 8; i++) {
