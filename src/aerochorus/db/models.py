@@ -423,6 +423,9 @@ class TranscriptionResult(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     # Deterministic quality flags computed on ingest (aerochorus.atc.quality).
     quality: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    # [[start_ms, end_ms, word], ...] when the model reports word timestamps.
+    # none_as_null: "not reported" must be SQL NULL (the backfill queries IS NULL).
+    words: Mapped[list[list[Any]] | None] = mapped_column(JSONB(none_as_null=True))
     created_at: Mapped[datetime] = _created_at()
 
     sweep_run_model: Mapped[SweepRunModel] = relationship()
@@ -521,6 +524,13 @@ class SegmentAgreement(Base):
     exact_groups: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
     near_group: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     flags: Mapped[dict[str, int]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    # v2: short/low-content handling and utterance agreement within the segment.
+    representative_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    representative_content_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    utterances: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+    utterance_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    best_utterance_family_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    best_utterance_tokens: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
@@ -528,6 +538,7 @@ class SegmentAgreement(Base):
         Index("ix_segment_agreement_exact_providers", "best_exact_provider_count"),
         Index("ix_segment_agreement_near_families", "best_near_family_count"),
         Index("ix_segment_agreement_results", "results_count"),
+        Index("ix_segment_agreement_utterance_families", "best_utterance_family_count"),
         Index(
             "ix_segment_agreement_representative_trgm",
             "representative_text",

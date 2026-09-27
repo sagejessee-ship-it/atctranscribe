@@ -32,6 +32,9 @@ from aerochorus.sweep_contracts import (
     SweepRead,
     SweepReport,
     TranscriptionRead,
+    WordBackfillAck,
+    WordBackfillItem,
+    WordBackfillPost,
 )
 
 router = APIRouter(tags=["transcription"])
@@ -282,6 +285,19 @@ def release(sweep_model_id: int, body: ReleaseBody, session: SessionDep) -> dict
         return srm
 
     return {"status": _call(session, act).status}
+
+
+@router.get("/results/word-backfill", response_model=list[WordBackfillItem])
+def word_backfill_candidates(
+    session: SessionDep, limit: int = Query(500, ge=1, le=5000), after: str | None = None
+) -> list[WordBackfillItem]:
+    """Results with word timestamps in their raw artifact but none stored (agreement v2)."""
+    return svc.word_backfill_candidates(session, limit, after)
+
+
+@router.post("/results/words", response_model=WordBackfillAck)
+def store_word_backfill(body: list[WordBackfillPost], session: SessionDep) -> WordBackfillAck:
+    return _call(session, lambda: svc.store_word_backfill(session, body))
 
 
 @router.post("/results/reflag", response_model=ReflagResult)

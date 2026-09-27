@@ -5,8 +5,21 @@ import { fmtSim } from "../lib/format";
 
 export const GROUP_LABEL = (index: number) => `G${index + 1}`;
 
-/** Exact groups, near group, abstentions/errors and flags, exactly as the backend computed them. */
-export function AgreementSummary({ agreement }: { agreement: Agreement | null }) {
+function secs(ms: number | null) {
+  return ms == null ? "?" : (ms / 1000).toFixed(2);
+}
+
+/**
+ * Exact groups, near group, agreed utterances within the segment, abstentions,
+ * errors and flags, exactly as the backend computed them.
+ */
+export function AgreementSummary({
+  agreement,
+  onUseUtterance,
+}: {
+  agreement: Agreement | null;
+  onUseUtterance?: (index: number) => void;
+}) {
   if (!agreement) {
     return (
       <Section title="Agreement" id="agreement">
@@ -82,6 +95,49 @@ export function AgreementSummary({ agreement }: { agreement: Agreement | null })
           <span className="num">{fmtSim(near.min_similarity)}</span>{" "}
           <span className="muted">({near.families.join(", ")})</span>
         </p>
+      ) : null}
+      {agreement.utterances?.length ? (
+        <table className="mini-table utterances">
+          <caption className="mini-table__caption">
+            Agreed utterances (within the segment; 3+ content words, 2+ families) · <kbd className="kbd">U</kbd> next
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">U</th>
+              <th scope="col">Agree</th>
+              <th scope="col">Text</th>
+              <th scope="col">Bounds (s)</th>
+              <th scope="col">
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {agreement.utterances.map((u, i) => (
+              <tr key={i}>
+                <td className="num">U{i + 1}</td>
+                <td>
+                  <AgreementBadge families={u.family_count} providers={u.provider_count} />
+                </td>
+                <td className="mini-table__text">
+                  <mark className={u.family_count >= 3 ? "agree-mark agree-mark--strong" : "agree-mark"}>{u.text}</mark>{" "}
+                  <span className="muted">{u.position}</span>
+                </td>
+                <td className="num" title={u.bounds_estimated ? "estimated from word position (no timed member)" : `timed by ${u.timed_by.join(", ")}`}>
+                  {secs(u.start_ms)}–{secs(u.end_ms)}
+                  {u.bounds_estimated ? " ~" : ""}
+                </td>
+                <td>
+                  {onUseUtterance && u.start_ms != null ? (
+                    <button type="button" className="btn btn--sm" onClick={() => onUseUtterance(i)} aria-label={`Use utterance ${i + 1} as a span`}>
+                      Use as span
+                    </button>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       ) : null}
       {flags.length ? (
         <div className="agree__flags">

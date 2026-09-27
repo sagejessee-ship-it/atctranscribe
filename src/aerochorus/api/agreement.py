@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from aerochorus.atc.agreement import AGREEMENT_VERSION, Hypothesis, compute_agreement
 from aerochorus.db.models import (
     Model,
+    Segment,
     SegmentAgreement,
     SweepRunModel,
     TranscriptionResult,
@@ -52,6 +53,12 @@ def latest_results(session: Session, segment_ids: list[int]):
 def refresh_agreement(session: Session, segment_ids: list[int]) -> int:
     threshold = near_threshold()
     by_segment: dict[int, list[Hypothesis]] = {sid: [] for sid in segment_ids}
+    durations = {
+        sid: duration
+        for sid, duration in session.execute(
+            select(Segment.id, Segment.duration_ms).where(Segment.id.in_(segment_ids))
+        )
+    }
     for segment_id, result, model in latest_results(session, segment_ids):
         by_segment[segment_id].append(
             Hypothesis(
@@ -60,13 +67,16 @@ def refresh_agreement(session: Session, segment_ids: list[int]) -> int:
                 status=result.status,
                 text=result.text,
                 flags=tuple((result.quality or {}).get("flags", [])),
+                words=tuple(tuple(w) for w in result.words) if result.words else None,
             )
         )
     # Database time, so staleness compares against result.created_at on one clock.
     now = func.now()
     rows = [
         {"segment_id": sid, "computed_at": now}
-        | compute_agreement(hypotheses, near_threshold=threshold).as_row()
+        | compute_agreement(
+            hypotheses, near_threshold=threshold, duration_ms=durations.get(sid)
+        ).as_row()
         for sid, hypotheses in by_segment.items()
         if hypotheses
     ]

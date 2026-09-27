@@ -47,9 +47,9 @@ export function SpanPanel({
   const [confirmGold, setConfirmGold] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
 
-  const draftKey = `${selection?.threadId ?? "draft"}:${current?.id ?? 0}`;
+  const draftKey = `${selection?.threadId ?? "draft"}:${current?.id ?? 0}:${selection?.utterance ?? ""}`;
   useEffect(() => {
-    setText(current?.text ?? "");
+    setText(current?.text ?? selection?.prefill ?? "");
     setLabel((current?.training_label as TrainingLabel) ?? "none");
     setNotes(current?.notes ?? "");
     setError(null);
@@ -88,7 +88,18 @@ export function SpanPanel({
       annotator,
       expected_version: current?.version ?? 0,
       confirm_gold: confirm,
-      basis: { parent_segment_id: segment.segment_id, ...(baseline ? { prefilled_from: baseline.model } : {}) },
+      basis: {
+        parent_segment_id: segment.segment_id,
+        ...(selection.utterance != null
+          ? {
+              started_from_utterance: selection.utterance,
+              utterance_families: segment.agreement?.utterances?.[selection.utterance]?.families,
+              utterance_providers: segment.agreement?.utterances?.[selection.utterance]?.providers,
+            }
+          : baseline
+            ? { prefilled_from: baseline.model }
+            : {}),
+      },
     });
   };
 

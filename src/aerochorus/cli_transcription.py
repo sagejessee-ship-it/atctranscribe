@@ -460,6 +460,51 @@ def cmd_worker_artifact(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_worker_backfill_words(args: argparse.Namespace) -> int:
+    """Read word timestamps from stored raw responses and attach them (agreement v2)."""
+    from aerochorus.sweep_contracts import WordBackfillPost
+    from aerochorus.worker.artifacts import ArtifactStore
+    from aerochorus.worker.client import ApiClient
+    from aerochorus.worker.crispasr import extract_words
+
+    config = _worker_config(args)
+    tc = config.transcription
+    stores = {tc.artifact_store: tc.artifact_root} | tc.artifact_mounts
+    readers = {name: ArtifactStore(root, name) for name, root in stores.items()}
+    updated = refreshed = skipped = 0
+    after = None
+    with ApiClient(config.api_url, timeout=600) as client:
+        while True:
+            batch = client.word_backfill_candidates(args.batch, after)
+            if not batch:
+                break
+            after = str(batch[-1].id)
+            posts = []
+            for item in batch:
+                store = item.artifact_uri.removeprefix("artifact://").split("/", 1)[0]
+                reader = readers.get(store)
+                if reader is None:
+                    skipped += 1
+                    continue
+                try:
+                    body = reader.read(item.artifact_uri).get("response")
+                except (OSError, ValueError):
+                    skipped += 1
+                    continue
+                words = extract_words(body) if isinstance(body, dict) else None
+                posts.append(WordBackfillPost(id=item.id, words=words))
+            if posts:
+                ack = client.store_word_backfill(posts)
+                updated += ack.updated
+                refreshed += ack.segments_refreshed
+            print(
+                f"backfilled {updated} results ({refreshed} re-agreed, {skipped} skipped)",
+                flush=True,
+            )
+    print(f"done: {updated} results with word timings; {skipped} artifacts not readable here")
+    return 0
+
+
 # --- parser wiring ----------------------------------------------------------------------
 
 
@@ -615,6 +660,13 @@ def register_worker(worker: argparse._SubParsersAction) -> None:
     p.add_argument("--max-model-runs", type=int)
     p.add_argument("--config", type=Path)
     p.set_defaults(func=cmd_worker_transcribe)
+
+    p = worker.add_parser(
+        "backfill-words", help="attach word timestamps from stored raw responses (agreement v2)"
+    )
+    p.add_argument("--batch", type=int, default=500)
+    p.add_argument("--config", type=Path)
+    p.set_defaults(func=cmd_worker_backfill_words)
 
     p = worker.add_parser("artifact", help="print a stored raw CrispASR response")
     p.add_argument("uri")

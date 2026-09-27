@@ -391,6 +391,8 @@ class Interpretation:
     has_word_timestamps: bool
     has_token_confidence: bool
     mean_token_confidence: float | None
+    # [(start_ms, end_ms, word)] when every word carries timestamps.
+    words: list[tuple[int, int, str]] | None = None
 
 
 def _probability(item: dict[str, Any]) -> float | None:
@@ -415,6 +417,7 @@ def interpret(body: dict[str, Any]) -> Interpretation:
     timed = [w for w in words if ("start" in w and "end" in w) or ("t0" in w and "t1" in w)]
     probabilities = [p for p in map(_probability, tokens or words) if p is not None]
     language = body.get("language")
+    word_times = extract_words(body) if words and len(timed) == len(words) else None
     return Interpretation(
         text=text,
         language=language if isinstance(language, str) and language else None,
@@ -424,4 +427,26 @@ def interpret(body: dict[str, Any]) -> Interpretation:
         mean_token_confidence=(
             round(sum(probabilities) / len(probabilities), 6) if probabilities else None
         ),
+        words=word_times,
     )
+
+
+def extract_words(body: dict[str, Any]) -> list[tuple[int, int, str]] | None:
+    """Word timestamps from a verbose_json body, in milliseconds (None if absent)."""
+    out = []
+    for segment in body.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for word in segment.get("words") or []:
+            if not isinstance(word, dict):
+                continue
+            text = str(word.get("word") or word.get("text") or "").strip()
+            if "start" in word and "end" in word:
+                start, end = float(word["start"]) * 1000, float(word["end"]) * 1000
+            elif "t0" in word and "t1" in word:  # whisper.cpp centiseconds
+                start, end = float(word["t0"]) * 10, float(word["t1"]) * 10
+            else:
+                return None
+            if text:
+                out.append((round(start), round(end), text))
+    return out or None

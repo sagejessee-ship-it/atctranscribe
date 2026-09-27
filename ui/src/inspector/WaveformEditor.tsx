@@ -23,6 +23,16 @@ export interface SpanSelection {
   threadId: number | null;
   start_ms: number;
   end_ms: number;
+  // Started from an agreed utterance: its text prefills the span transcript.
+  prefill?: string | null;
+  utterance?: number | null;
+}
+
+export interface UtteranceMark {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  family_count: number;
 }
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -62,10 +72,13 @@ export const WaveformEditor = forwardRef<
     segmentId: number;
     durationMs: number | null;
     spans: AnnotationThread[];
+    utterances?: UtteranceMark[];
     selection: SpanSelection | null;
     onSelection: (selection: SpanSelection | null) => void;
   }
->(function WaveformEditor({ segmentId, durationMs, spans, selection, onSelection }, ref) {
+>(function WaveformEditor({ segmentId, durationMs, spans, utterances = [], selection, onSelection }, ref) {
+  const utterancesRef = useRef(utterances);
+  utterancesRef.current = utterances;
   const container = useRef<HTMLDivElement>(null);
   const ws = useRef<WaveSurfer | null>(null);
   const regions = useRef<RegionsPlugin | null>(null);
@@ -150,7 +163,9 @@ export const WaveformEditor = forwardRef<
       audioProblem(segmentId).then(setError);
     });
     regionsPlugin.on("region-created", (region) => {
-      if (region.id.startsWith("span-")) return;
+      // Programmatic regions (saved spans, utterances, a draft set from the form or an
+      // utterance) already are the selection; only mouse-drawn regions define a new one.
+      if (region.id.startsWith("span-") || region.id.startsWith("utt-") || region.id === DRAFT) return;
       for (const other of regionsPlugin.getRegions()) {
         if (other !== region && other.id === DRAFT) other.remove();
       }
@@ -160,6 +175,20 @@ export const WaveformEditor = forwardRef<
     regionsPlugin.on("region-updated", (region) => emit(region));
     regionsPlugin.on("region-clicked", (region, event) => {
       event.stopPropagation();
+      if (region.id.startsWith("utt-")) {
+        // One click: start a span from this agreed utterance, text prefilled.
+        const index = Number(region.id.slice(4));
+        const u = utterancesRef.current[index];
+        if (!u) return;
+        onSelectionRef.current({
+          threadId: null,
+          start_ms: u.start_ms,
+          end_ms: u.end_ms,
+          prefill: u.text,
+          utterance: index,
+        });
+        return;
+      }
       emit(region);
       region.play(true);
     });
@@ -174,6 +203,27 @@ export const WaveformEditor = forwardRef<
     // zoom is applied live below; recreating on zoom would reload audio
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segmentId, attempt, emit]);
+
+  // Agreed utterances -> fixed regions (not draggable; click to start a span).
+  useEffect(() => {
+    const plugin = regions.current;
+    if (!plugin || !ready) return;
+    for (const region of plugin.getRegions()) if (region.id.startsWith("utt-")) region.remove();
+    utterances.forEach((u, i) => {
+      const label = document.createElement("span");
+      label.className = "utt-label";
+      label.textContent = `U${i + 1}·${u.family_count}f`;
+      plugin.addRegion({
+        id: `utt-${i}`,
+        start: u.start_ms / 1000,
+        end: u.end_ms / 1000,
+        color: alpha(token(u.family_count >= 3 ? "--ok" : "--derived"), 0.16),
+        drag: false,
+        resize: false,
+        content: label,
+      });
+    });
+  }, [utterances, ready]);
 
   // Saved spans -> regions (after every refetch).
   useEffect(() => {
@@ -203,6 +253,7 @@ export const WaveformEditor = forwardRef<
     const id = selection ? (selection.threadId == null ? DRAFT : spanId(selection.threadId)) : null;
     activeRef.current = id;
     for (const region of plugin.getRegions()) {
+      if (region.id.startsWith("utt-")) continue;
       const saved = spans.find((s) => spanId(s.thread_id) === region.id);
       if (region.id === DRAFT && id !== DRAFT) {
         region.remove();

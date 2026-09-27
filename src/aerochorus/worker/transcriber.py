@@ -424,6 +424,7 @@ class SweepWorker:
             has_token_confidence=parsed.has_token_confidence,
             mean_token_confidence=parsed.mean_token_confidence,
             word_count=parsed.word_count,
+            words=parsed.words,
             lease_seconds=self.tc.lease_seconds,
             **stored,
         )

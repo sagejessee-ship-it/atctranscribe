@@ -222,6 +222,28 @@ export function FilterRail({
           onCommit={(v) => onChange({ max_exact_families: v })}
         />
         <NumberField
+          label="Words ≥"
+          value={filters.min_words}
+          onCommit={(v) => onChange({ min_words: v })}
+        />
+        <NumberField
+          label="Utterance families ≥"
+          value={filters.min_utterance_families}
+          min={1}
+          onCommit={(v) => onChange({ min_utterance_families: v })}
+        />
+        <NumberField
+          label="Utterance words ≥"
+          value={filters.min_utterance_tokens}
+          min={1}
+          onCommit={(v) => onChange({ min_utterance_tokens: v })}
+        />
+        <TriState
+          label="Partial agreement"
+          value={filters.partial_agreement}
+          onChange={(v) => onChange({ partial_agreement: v })}
+        />
+        <NumberField
           label="Models ≥"
           value={filters.min_models ?? 1}
           placeholder="1"

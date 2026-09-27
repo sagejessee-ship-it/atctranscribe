@@ -33,6 +33,7 @@ from aerochorus.api.sweeps import Conflict, Invalid, NotFound
 from aerochorus.atc.agreement import AGREEMENT_VERSION
 from aerochorus.atc.align import sequence_similarity
 from aerochorus.atc.normalize import evidence_tokens, normalize_for_evidence
+from aerochorus.atc.utterances import token_view
 from aerochorus.db.models import (
     AnnotationThread,
     AnnotationVersion,
@@ -51,6 +52,7 @@ from aerochorus.review_contracts import (
     BatchAction,
     BatchOutcome,
     BatchRequest,
+    Highlight,
     HypothesisView,
     NeighborView,
     ReviewFilters,
@@ -81,6 +83,24 @@ TRAINING_LABELS_FORBIDDEN_ON_BENCHMARK = {
 }
 
 SAVED_VIEWS = [
+    SavedView(
+        key="exact-2-families-3-words",
+        name="2+ exact families, 3+ words",
+        description="Independent agreement on a substantive transcript (hides 'thank you')",
+        filters=ReviewFilters(min_exact_families=2, min_words=3),
+    ),
+    SavedView(
+        key="partial-agreement",
+        name="Partial agreement (utterances)",
+        description="An utterance agrees across 2+ families; the whole segment does not",
+        filters=ReviewFilters(partial_agreement=True),
+    ),
+    SavedView(
+        key="utterance-3-families",
+        name="3+ family utterances",
+        description="At least one stretch of 3+ content words agreed by 3+ families",
+        filters=ReviewFilters(min_utterance_families=3),
+    ),
     SavedView(
         key="exact-2-families",
         name="2+ exact families",
@@ -240,6 +260,15 @@ def _apply_filters(session: Session, query: Select, f: ReviewFilters, a: _Aliase
         query = query.where(sa.results_count >= f.min_models)
     if f.min_success is not None:
         query = query.where(sa.success_count >= f.min_success)
+    if f.min_words is not None:
+        query = query.where(sa.representative_tokens >= f.min_words)
+    if f.min_utterance_families is not None:
+        query = query.where(sa.best_utterance_family_count >= f.min_utterance_families)
+    if f.min_utterance_tokens is not None:
+        query = query.where(sa.best_utterance_tokens >= f.min_utterance_tokens)
+    if f.partial_agreement is not None:
+        partial = and_(sa.best_utterance_family_count >= 2, sa.best_exact_family_count < 2)
+        query = query.where(partial if f.partial_agreement else ~partial)
     for value, column, op in (
         (f.min_exact_providers, sa.best_exact_provider_count, "ge"),
         (f.min_exact_families, sa.best_exact_family_count, "ge"),
@@ -382,7 +411,36 @@ def _row(seg, source_key, sa, version, span_count, stations) -> ReviewRow:
         human_text=version.text if version and version.text_origin == "human" else None,
         flags=sorted((sa.flags or {}).keys()) if sa else [],
         span_count=span_count or 0,
+        representative_tokens=sa.representative_tokens if sa else 0,
+        best_utterance_family_count=sa.best_utterance_family_count if sa else 0,
+        best_utterance_tokens=sa.best_utterance_tokens if sa else 0,
+        representative_highlights=(
+            text_highlights(sa.representative_text, sa.utterances) if sa else []
+        ),
     )
+
+
+def text_highlights(text: str | None, utterances: list[dict] | None) -> list[Highlight]:
+    """Word spans of `text` covered by agreed utterances (found by their tokens)."""
+    if not text or not utterances:
+        return []
+    tokens, word_index = token_view(text)
+    out = []
+    for i, u in enumerate(utterances):
+        run = u.get("tokens") or []
+        k = len(run)
+        for at in range(len(tokens) - k + 1):
+            if tokens[at : at + k] == run:
+                out.append(
+                    Highlight(
+                        start=word_index[at],
+                        end=word_index[at + k - 1] + 1,
+                        utterance=i,
+                        family_count=u.get("family_count", 0),
+                    )
+                )
+                break
+    return out
 
 
 def filtered_ids(session: Session, filters: ReviewFilters) -> Select:
@@ -478,6 +536,22 @@ def _hypotheses(session: Session, segment: Segment, sa: SegmentAgreement | None)
                 attempt=result.attempt,
                 created_at=result.created_at,
                 superseded=superseded,
+                ensemble_eligible=model.ensemble_eligible,
+                has_word_times=bool(result.words),
+                highlights=(
+                    [
+                        Highlight(
+                            start=u["spans"][model.logical_name][0],
+                            end=u["spans"][model.logical_name][1],
+                            utterance=i,
+                            family_count=u["family_count"],
+                        )
+                        for i, u in enumerate(sa.utterances or [])
+                        if model.logical_name in (u.get("spans") or {})
+                    ]
+                    if sa and not superseded
+                    else []
+                ),
                 provenance={
                     "model_sha256": model.model_sha256,
                     "crisp_backend": model.crisp_backend,

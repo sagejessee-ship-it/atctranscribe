@@ -6,6 +6,7 @@ export const SHORTCUTS: [string[], string][] = [
   [["K", "↓"], "Next segment"],
   [["R"], "Replay the selected span, or from the start"],
   [["L"], "Looping on/off (default on: selected span, else whole file)"],
+  [["U"], "Start a span from the next agreed utterance (text prefilled)"],
   [["C"], "Focus the correction editor"],
   [["A"], "Use the selected hypothesis as correction starting text"],
   [["S"], "Mark silver (human text if typed, else model consensus)"],

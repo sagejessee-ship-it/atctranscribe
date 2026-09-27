@@ -13,6 +13,9 @@ segment, each tagged with its architecture family *from the model registry*.
 * Provider count and family count are always separate. Two models of the
   same family (e.g. two Canary decodings) are two providers, one family.
 * Abstentions and errors are counted, never treated as disagreement or votes.
+* v2 adds **utterance agreement** within the segment (``atc.utterances``):
+  agreeing stretches of 3+ content tokens across 2+ families, with time bounds
+  from members that report word timestamps.
 """
 
 from __future__ import annotations
@@ -23,8 +26,9 @@ from typing import Any
 
 from aerochorus.atc.align import sequence_similarity
 from aerochorus.atc.normalize import evidence_tokens, normalize_for_evidence
+from aerochorus.atc.utterances import LOW_CONTENT, TimedHypothesis, utterance_agreement
 
-AGREEMENT_VERSION = 1
+AGREEMENT_VERSION = 2
 DEFAULT_NEAR_THRESHOLD = 0.8
 
 
@@ -35,6 +39,8 @@ class Hypothesis:
     status: str  # success | abstained | error
     text: str | None = None
     flags: tuple[str, ...] = ()
+    # (start_ms, end_ms, word) as reported; None if the model gives no word timestamps.
+    words: tuple[tuple[int, int, str], ...] | None = None
 
 
 @dataclass
@@ -57,6 +63,11 @@ class Agreement:
     representative_text: str | None
     representative_source: str | None
     flags: dict[str, int] = field(default_factory=dict)
+    representative_tokens: int = 0
+    representative_content_tokens: int = 0
+    utterances: list[dict[str, Any]] = field(default_factory=list)
+    best_utterance_family_count: int = 0
+    best_utterance_tokens: int = 0
 
     def as_row(self) -> dict[str, Any]:
         return {
@@ -78,6 +89,12 @@ class Agreement:
             "representative_text": self.representative_text,
             "representative_source": self.representative_source,
             "flags": self.flags,
+            "representative_tokens": self.representative_tokens,
+            "representative_content_tokens": self.representative_content_tokens,
+            "utterances": self.utterances,
+            "utterance_count": len(self.utterances),
+            "best_utterance_family_count": self.best_utterance_family_count,
+            "best_utterance_tokens": self.best_utterance_tokens,
         }
 
 
@@ -158,7 +175,10 @@ def _medoid(spoken: list[Hypothesis]) -> Hypothesis | None:
 
 
 def compute_agreement(
-    hypotheses: list[Hypothesis], *, near_threshold: float = DEFAULT_NEAR_THRESHOLD
+    hypotheses: list[Hypothesis],
+    *,
+    near_threshold: float = DEFAULT_NEAR_THRESHOLD,
+    duration_ms: int | None = None,
 ) -> Agreement:
     statuses = Counter(h.status for h in hypotheses)
     groups = exact_groups(hypotheses)
@@ -179,6 +199,11 @@ def compute_agreement(
     flags: Counter = Counter()
     for h in hypotheses:
         flags.update(set(h.flags))
+    rep_tokens = evidence_tokens(representative_text)
+    utterances = utterance_agreement(
+        [TimedHypothesis(h.model, h.family, h.text, h.words) for h in spoken],
+        duration_ms=duration_ms,
+    )
 
     return Agreement(
         version=AGREEMENT_VERSION,
@@ -199,4 +224,9 @@ def compute_agreement(
         representative_text=representative_text,
         representative_source=representative_source,
         flags=dict(sorted(flags.items())),
+        representative_tokens=len(rep_tokens),
+        representative_content_tokens=sum(1 for t in rep_tokens if t not in LOW_CONTENT),
+        utterances=utterances,
+        best_utterance_family_count=max((u["family_count"] for u in utterances), default=0),
+        best_utterance_tokens=max((u["n_tokens"] for u in utterances), default=0),
     )

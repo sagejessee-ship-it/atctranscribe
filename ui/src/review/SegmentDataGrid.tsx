@@ -13,6 +13,7 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 
 import type { ReviewRow, SortKey } from "../api/types";
 import { AgreementBadge, Badge, StatusBadge, TrainingBadge } from "../components/badges";
+import { HighlightedText } from "../components/HighlightedText";
 import { fmtDuration, fmtSim, fmtUtc } from "../lib/format";
 
 interface Meta {
@@ -47,6 +48,12 @@ function RiskCell({ row }: { row: ReviewRow }) {
     parts.push(<Badge key="a" tone="neutral" title={`${row.abstained_count} model(s) produced no words`}>A{row.abstained_count}</Badge>);
   if (row.flags.length) parts.push(<Badge key="f" tone="warn" title={row.flags.join(", ")}>F{row.flags.length}</Badge>);
   if (row.span_count) parts.push(<Badge key="s" tone="info" title={`${row.span_count} span annotation(s)`}>S{row.span_count}</Badge>);
+  if (row.best_utterance_family_count >= 2 && row.best_exact_family_count < 2)
+    parts.push(
+      <Badge key="u" tone="derived" title={`partial agreement: an utterance of ${row.best_utterance_tokens} words agreed by ${row.best_utterance_family_count} families`}>
+        U{row.best_utterance_family_count}
+      </Badge>,
+    );
   return parts.length ? <span className="cell-badges">{parts}</span> : <span className="muted">—</span>;
 }
 
@@ -62,7 +69,7 @@ function TextCell({ row }: { row: ReviewRow }) {
     return (
       <span className="cell-text">
         <span className="origin origin--model" title={`model consensus (${row.representative_source ?? "?"})`}>M</span>
-        {row.representative_text}
+        <HighlightedText text={row.representative_text} highlights={row.representative_highlights ?? []} />
       </span>
     );
   return <span className="muted">{row.results_count ? "(no words)" : "(untranscribed)"}</span>;

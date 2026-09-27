@@ -43,6 +43,9 @@ from aerochorus.sweep_contracts import (
     SweepRead,
     SweepReport,
     TranscriptionRead,
+    WordBackfillAck,
+    WordBackfillItem,
+    WordBackfillPost,
 )
 
 
@@ -231,6 +234,21 @@ class ApiClient:
             "POST", f"/api/v1/models/{name}/qualification", json=body.model_dump(mode="json")
         )
         return ModelRead.model_validate(data)
+
+    def word_backfill_candidates(
+        self, limit: int = 500, after: str | None = None
+    ) -> list[WordBackfillItem]:
+        params: dict[str, Any] = {"limit": limit}
+        if after:
+            params["after"] = after
+        data = self._request("GET", "/api/v1/results/word-backfill", params=params)
+        return TypeAdapter(list[WordBackfillItem]).validate_python(data)
+
+    def store_word_backfill(self, items: list[WordBackfillPost]) -> WordBackfillAck:
+        data = self._request(
+            "POST", "/api/v1/results/words", json=[i.model_dump(mode="json") for i in items]
+        )
+        return WordBackfillAck.model_validate(data)
 
     def list_suites(self) -> list[SuiteRead]:
         return TypeAdapter(list[SuiteRead]).validate_python(self._request("GET", "/api/v1/suites"))

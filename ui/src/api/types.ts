@@ -33,6 +33,10 @@ export interface ReviewFilters {
   min_near_similarity?: number | null;
   max_exact_families?: number | null;
   max_near_families?: number | null;
+  min_words?: number | null;
+  min_utterance_families?: number | null;
+  min_utterance_tokens?: number | null;
+  partial_agreement?: boolean | null;
   review_status?: ReviewStatus[];
   training_label?: TrainingLabel[];
   has_error?: boolean | null;
@@ -54,6 +58,30 @@ export interface ReviewQuery {
   descending: boolean;
   offset: number;
   limit: number;
+}
+
+export interface Highlight {
+  start: number;
+  end: number;
+  utterance: number;
+  family_count: number;
+}
+
+export interface Utterance {
+  tokens: string[];
+  text: string;
+  n_tokens: number;
+  families: string[];
+  family_count: number;
+  providers: string[];
+  provider_count: number;
+  spans: Record<string, [number, number]>;
+  start_ms: number | null;
+  end_ms: number | null;
+  bounds_estimated: boolean;
+  timed_by: string[];
+  position: "leading" | "middle" | "trailing";
+  coverage: number | null;
 }
 
 export interface ReviewRow {
@@ -80,6 +108,10 @@ export interface ReviewRow {
   human_text: string | null;
   flags: string[];
   span_count: number;
+  representative_tokens: number;
+  best_utterance_family_count: number;
+  best_utterance_tokens: number;
+  representative_highlights: Highlight[];
 }
 
 export interface ReviewPage {
@@ -149,6 +181,11 @@ export interface Agreement {
   near_group: NearGroup | null;
   flags: Record<string, number>;
   computed_at: string;
+  utterances: Utterance[];
+  utterance_count: number;
+  best_utterance_family_count: number;
+  best_utterance_tokens: number;
+  representative_tokens: number;
 }
 
 export interface Hypothesis {
@@ -167,6 +204,9 @@ export interface Hypothesis {
   created_at: string;
   superseded: boolean;
   provenance: Record<string, unknown>;
+  ensemble_eligible: boolean;
+  highlights: Highlight[];
+  has_word_times: boolean;
 }
 
 export interface NeighborView {

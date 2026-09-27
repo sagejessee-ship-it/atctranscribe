@@ -5,6 +5,7 @@ import { ClipboardCopy, CornerDownLeft, Info } from "lucide-react";
 import type { Hypothesis } from "../api/types";
 import { Badge } from "../components/badges";
 import { Button, IconButton, Section } from "../components/ui";
+import { HighlightedText } from "../components/HighlightedText";
 import { fmtSim } from "../lib/format";
 import { GROUP_LABEL } from "./AgreementSummary";
 
@@ -64,13 +65,21 @@ export function HypothesisTable({
                 <td className="hyp-row__model">
                   <span className="num">{h.model}</span>
                   {selectedId === h.result_id ? <span className="sr-only">(selected)</span> : null}
-                  <span className="muted hyp-row__family">{h.architecture_family}</span>
+                  <span className="muted hyp-row__family">
+                    {h.architecture_family}
+                    {h.ensemble_eligible === false ? " · research" : ""}
+                    {h.has_word_times ? " · timed" : ""}
+                  </span>
                 </td>
                 <td>
                   <Badge tone={STATUS_TONE[h.status]}>{h.status}</Badge>
                 </td>
                 <td className="hyp-row__text">
-                  {h.text ? h.text : <span className="muted">{h.status === "error" ? String(h.provenance.error_type ?? "error") : "(no words)"}</span>}
+                  {h.text ? (
+                    <HighlightedText text={h.text} highlights={h.highlights ?? []} />
+                  ) : (
+                    <span className="muted">{h.status === "error" ? String(h.provenance.error_type ?? "error") : "(no words)"}</span>
+                  )}
                   {h.flags.length ? (
                     <span className="hyp-row__flags">
                       {h.flags.map((f) => (

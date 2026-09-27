@@ -1333,3 +1333,26 @@ a {
   height: 100%;
   background: var(--accent);
 }
+
+/* --- agreement v2: highlighted agreed utterances ----------------------------------------------- */
+
+.agree-mark {
+  background: var(--derived-bg);
+  color: inherit;
+  border-bottom: 1px solid var(--derived);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.agree-mark--strong {
+  background: var(--ok-bg);
+  border-bottom-color: var(--ok);
+}
+.utterances td {
+  vertical-align: middle;
+}
+.utt-label {
+  font: 600 9px/12px var(--font-mono);
+  color: var(--text-muted);
+  padding: 0 3px;
+  pointer-events: none;
+}

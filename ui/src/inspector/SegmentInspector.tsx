@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -20,6 +20,7 @@ export interface InspectorCommands {
   togglePlay(): void;
   replay(): void;
   toggleLoop(): void;
+  nextUtterance(): void;
   focusCorrection(): void;
   useSelectedHypothesis(): void;
   markSilver(): void;
@@ -122,11 +123,41 @@ export function SegmentInspector({
     setSpan(null);
   }, [segmentId]);
 
+  const marks = useMemo(
+    () =>
+      (segment?.agreement?.utterances ?? [])
+        .filter((u) => u.start_ms != null && u.end_ms != null)
+        .map((u) => ({ start_ms: u.start_ms!, end_ms: u.end_ms!, text: u.text, family_count: u.family_count })),
+    [segment],
+  );
+  /** Start a span from agreed utterance `index` (null = the next one after the current). */
+  const useUtterance = useCallback(
+    (index: number | null) => {
+      const all = segment?.agreement?.utterances ?? [];
+      const timed = all.map((u, i) => ({ u, i })).filter(({ u }) => u.start_ms != null && u.end_ms != null);
+      if (!timed.length) return;
+      const pick =
+        index != null
+          ? timed.find(({ i }) => i === index)
+          : timed[(timed.findIndex(({ i }) => i === span?.utterance) + 1) % timed.length];
+      if (!pick) return;
+      setSpan({
+        threadId: null,
+        start_ms: pick.u.start_ms!,
+        end_ms: pick.u.end_ms!,
+        prefill: pick.u.text,
+        utterance: pick.i,
+      });
+    },
+    [segment, span?.utterance],
+  );
+
   useEffect(() => {
     commands.current = {
       togglePlay: () => player.current?.toggle(),
       replay: () => player.current?.replay(),
       toggleLoop: () => player.current?.toggleLoop(),
+      nextUtterance: () => useUtterance(null),
       focusCorrection: () => editor.current?.focus(),
       useSelectedHypothesis: () => baseline?.text && editor.current?.useText(baseline.text),
       markSilver: () => editor.current?.markSilver(),
@@ -136,7 +167,7 @@ export function SegmentInspector({
     return () => {
       commands.current = null;
     };
-  }, [commands, baseline]);
+  }, [commands, baseline, useUtterance]);
 
   if (segmentId == null) {
     return (
@@ -171,10 +202,11 @@ export function SegmentInspector({
         segmentId={segment.segment_id}
         durationMs={segment.duration_ms}
         spans={segment.span_annotations}
+        utterances={marks}
         selection={span}
         onSelection={setSpan}
       />
-      <AgreementSummary agreement={segment.agreement} />
+      <AgreementSummary agreement={segment.agreement} onUseUtterance={(i) => useUtterance(i)} />
       <HypothesisTable
         hypotheses={segment.hypotheses}
         selectedId={baseline?.result_id ?? null}

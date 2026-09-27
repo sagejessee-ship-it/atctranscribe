@@ -95,6 +95,14 @@ class ReviewFilters(BaseModel):
     min_near_similarity: float | None = Field(default=None, ge=0, le=1)
     max_exact_families: int | None = Field(default=None, ge=0)  # "disagreement" views
     max_near_families: int | None = Field(default=None, ge=0)
+    # Words in the representative transcript (short "thank you"/"roger" segments are
+    # often agreed but wrong; single words are low impact).
+    min_words: int | None = Field(default=None, ge=0)
+    # Utterance agreement within a segment (agreement v2).
+    min_utterance_families: int | None = Field(default=None, ge=1)
+    min_utterance_tokens: int | None = Field(default=None, ge=1)
+    # Agreeing utterances but no whole-segment exact agreement: recoverable partial data.
+    partial_agreement: bool | None = None
     review_status: list[ReviewStatus] = Field(default_factory=list)
     training_label: list[TrainingLabel] = Field(default_factory=list)
     has_error: bool | None = None
@@ -117,6 +125,15 @@ class ReviewQuery(BaseModel):
     descending: bool = True
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=500)
+
+
+class Highlight(BaseModel):
+    """Word span [start, end) of a text that belongs to agreed utterance `utterance`."""
+
+    start: int
+    end: int
+    utterance: int
+    family_count: int
 
 
 class ReviewRow(BaseModel):
@@ -143,6 +160,10 @@ class ReviewRow(BaseModel):
     human_text: str | None
     flags: list[str]
     span_count: int = 0
+    representative_tokens: int = 0
+    best_utterance_family_count: int = 0
+    best_utterance_tokens: int = 0
+    representative_highlights: list[Highlight] = Field(default_factory=list)
 
 
 class ReviewPage(BaseModel):
@@ -183,6 +204,9 @@ class HypothesisView(BaseModel):
     created_at: datetime
     superseded: bool  # an older result for the same model
     provenance: dict[str, Any]
+    ensemble_eligible: bool = True  # research-only models are shown, never counted
+    highlights: list[Highlight] = Field(default_factory=list)
+    has_word_times: bool = False
 
 
 class NeighborView(BaseModel):

@@ -71,6 +71,9 @@ from aerochorus.sweep_contracts import (
     SweepReportModel,
     SweepStatus,
     TranscriptionRead,
+    WordBackfillAck,
+    WordBackfillItem,
+    WordBackfillPost,
 )
 
 # Request fields every model run sends; per-model params and sweep overrides
@@ -1121,3 +1124,38 @@ def list_platform_qualifications(
         query.order_by(ModelPlatformQualification.hardware_profile, Model.logical_name)
     )
     return [platform_qualification_read(row, model) for row, model in rows]
+
+
+# --- word timings backfill (agreement v2) ----------------------------------------------------
+
+
+def word_backfill_candidates(
+    session: Session, limit: int, after: str | None = None
+) -> list[WordBackfillItem]:
+    """Results whose model reported word timestamps but whose timings are not stored yet."""
+    query = select(TranscriptionResult.id, TranscriptionResult.artifact_uri).where(
+        TranscriptionResult.has_word_timestamps.is_(True),
+        TranscriptionResult.words.is_(None),
+        TranscriptionResult.artifact_uri.is_not(None),
+    )
+    if after:
+        query = query.where(TranscriptionResult.id > after)
+    rows = session.execute(query.order_by(TranscriptionResult.id).limit(limit))
+    return [WordBackfillItem(id=rid, artifact_uri=uri) for rid, uri in rows]
+
+
+def store_word_backfill(session: Session, body: list[WordBackfillPost]) -> WordBackfillAck:
+    """Attach word timings read from raw artifacts; recompute agreement for those segments."""
+    by_id = {item.id: item for item in body}
+    results = list(
+        session.scalars(select(TranscriptionResult).where(TranscriptionResult.id.in_(by_id)))
+    )
+    segments = set()
+    for result in results:
+        words = by_id[result.id].words
+        # [] marks "looked, none usable" so the result is not offered again.
+        result.words = [list(w) for w in words] if words else []
+        segments.add(result.segment_id)
+    session.flush()
+    refreshed = refresh_agreement(session, sorted(segments)) if segments else 0
+    return WordBackfillAck(updated=len(results), segments_refreshed=refreshed)

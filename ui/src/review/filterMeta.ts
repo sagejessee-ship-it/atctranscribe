@@ -57,6 +57,15 @@ export function describeFilters(
   num("min_near_families", (v) => `near families ≥ ${v}`);
   num("max_near_families", (v) => `near families ≤ ${v}`);
   num("min_near_similarity", (v) => `near sim ≥ ${v}`);
+  num("min_words", (v) => `words ≥ ${v}`);
+  num("min_utterance_families", (v) => `utterance families ≥ ${v}`);
+  num("min_utterance_tokens", (v) => `utterance words ≥ ${v}`);
+  if (f.partial_agreement != null)
+    chips.push({
+      key: "partial_agreement",
+      label: `partial agreement: ${tri(f.partial_agreement)}`,
+      clear: drop("partial_agreement"),
+    });
   list("review_status", "review");
   list("training_label", "training");
   list("span_labels", "span");

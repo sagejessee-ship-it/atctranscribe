@@ -392,11 +392,28 @@ class PendingBatch(BaseModel):
     segments: list[PendingSegment]
 
 
+class WordBackfillItem(BaseModel):
+    id: UUID
+    artifact_uri: str
+
+
+class WordBackfillPost(BaseModel):
+    id: UUID
+    words: list[tuple[int, int, str]] | None
+
+
+class WordBackfillAck(BaseModel):
+    updated: int
+    segments_refreshed: int
+
+
 class ResultPost(BaseModel):
     id: UUID
     segment_id: int
     status: ResultStatus
     text: str | None = None
+    # [(start_ms, end_ms, word)] when the model reports word timestamps.
+    words: list[tuple[int, int, str]] | None = None
     language: str | None = None
     audio_ms: int | None = Field(default=None, ge=0)
     inference_ms: int | None = Field(default=None, ge=0)
