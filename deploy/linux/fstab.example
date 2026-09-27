@@ -1,0 +1,16 @@
+# /etc/fstab: the collector's archive, read-only, over the LAN (ADR-002, ADR-021).
+# AeroChorus identity is (logical source key, relative path); this mount path is
+# machine-local configuration only (worker.toml [sources.home_atc_archive].root).
+#
+# 1. sudo apt install cifs-utils
+# 2. sudo install -m 600 /dev/null /etc/aerochorus/smb.cred
+#    and put in it:   username=<collector share user>
+#                     password=<password>
+# 3. sudo mkdir -p /mnt/aerochorus/atc
+# 4. add the line below, then: sudo systemctl daemon-reload && sudo mount /mnt/aerochorus/atc
+#
+# ro           : the kernel refuses every write (AeroChorus never writes anyway)
+# nofail,_netdev,x-systemd.automount : boot never hangs on the collector; the mount
+#                appears on first access and AeroChorus reports source_unavailable meanwhile
+# file_mode/dir_mode : read-only permissions for everyone
+//192.168.68.84/bwi  /mnt/aerochorus/atc  cifs  ro,credentials=/etc/aerochorus/smb.cred,uid=1000,gid=1000,file_mode=0444,dir_mode=0555,iocharset=utf8,vers=3.0,nofail,_netdev,x-systemd.automount,x-systemd.mount-timeout=30  0  0

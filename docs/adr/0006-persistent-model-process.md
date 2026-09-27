@@ -1,6 +1,8 @@
 # ADR-006: Persistent model process, sequential models
 
-Status: Accepted (2026-09-26); implementation in Phase 2
+Status: Accepted (2026-09-26); implementation in Phase 2. The hardware
+references (M1 Air) are historical; see [ADR-021](0021-linux-pascal-deployment.md).
+One model resident at a time matters even more on an 8 GB GTX 1070.
 
 ## Decision
 

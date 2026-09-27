@@ -10,7 +10,7 @@ were made while implementing Phases 0–4.
 | [002](0002-immutable-external-source-audio.md) | Source audio is external, read-only, logically addressed | `ck_corpus_source_read_only`, `test_source_audio_cannot_be_modified`, `ReadOnlyCorpusReader` |
 | [003](0003-postgresql-is-authoritative.md) | PostgreSQL is authoritative; JSONL is export-only | `test_no_jsonl_operational_datastore` |
 | [004](0004-raw-model-output-preserved-once.md) | Raw model output stored once as `.json.zst` | `ArtifactStore`, `test_artifacts_are_compressed_json` |
-| [005](0005-native-crispasr-on-macos.md) | CrispASR native on macOS; Compose is control plane only (amended: CUDA image allowed on NVIDIA hosts) | `docker-compose.yml`, `worker.crispasr.launcher` |
+| [005](0005-native-crispasr-on-macos.md) | CrispASR native on macOS; Compose is control plane only (amended: CUDA image allowed on NVIDIA hosts). **Superseded for deployment by ADR-021** | `docker-compose.yml`, `worker.crispasr.launcher` |
 | [006](0006-persistent-model-process.md) | One persistent CrispASR process per model, restart between models | `SweepWorker`, `test_two_model_sweep_end_to_end` |
 | [007](0007-corpus-windows.md) | Sweep runs are corpus windows × model suites | `sweep_run_segment`, `config_sha256` |
 | [008](0008-eligible-models.md) | "All models" means all enabled, sweep-eligible models | `ck_model_sweep_requires_sha256` |
@@ -26,3 +26,5 @@ were made while implementing Phases 0–4.
 | [018](0018-partial-span-annotations.md) | Spans are bounded annotation threads on the parent; labels independent of the parent; clips materialized only at export (re-transcribe-selection deferred) | `test_datasets.py`, E2E "partial gold" |
 | [019](0019-custom-fine-tuned-model-reregistration.md) | Converted fine-tunes carry a validated `pedigree.lineage` and pass seven qualification gates before becoming sweep-eligible | `test_model_lineage.py` |
 | [020](0020-on-demand-cached-adsb-context.md) | ADS-B context is fetched on demand from OpenSky Trino (`state_vectors_data4`), tightly bounded, cached as snapshots; never bulk-ingested; credentials server-side only | `test_opensky.py`, `test_context.py`, `ui/e2e/adsb.spec.ts` |
+| [021](0021-linux-pascal-deployment.md) | Primary host is Linux + GTX 1070 8 GB (CUDA 12 pinned; Pascal); hardware profiles; qualification per profile; ensemble eligibility separate from sweep eligibility; explicit memory/offload | `test_hardware_profile.py`, `test_platform_qualification.py`, `deploy/linux/` |
+

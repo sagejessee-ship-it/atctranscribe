@@ -1,0 +1,16 @@
+# Linux host overrides (ADR-021):
+#   docker compose -f docker-compose.yml -f deploy/linux/compose.linux.yml up -d
+# PostgreSQL data lives under $AEROCHORUS_DATA (default /srv/aerochorus) and is
+# never exposed beyond loopback. The web UI is served natively by the review edge
+# (aerochorus-edge.service) because it reads the corpus mount.
+services:
+  postgres:
+    volumes:
+      - ${AEROCHORUS_DATA:-/srv/aerochorus}/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  api:
+    environment:
+      AEROCHORUS_OPENSKY_CLIENT_ID: ${AEROCHORUS_OPENSKY_CLIENT_ID:-}
+      AEROCHORUS_OPENSKY_CLIENT_SECRET: ${AEROCHORUS_OPENSKY_CLIENT_SECRET:-}
+    restart: unless-stopped

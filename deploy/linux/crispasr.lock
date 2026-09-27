@@ -1,0 +1,21 @@
+# Pinned CrispASR runtime for the Linux GTX 1070 host (ADR-021).
+# Pascal (compute capability 6.1) needs the CUDA 12 build: CUDA 13 no longer
+# generates code for Pascal. Never switch this to the *-cuda13 asset.
+# Digests are the GitHub-published release-asset SHA-256 values.
+CRISPASR_VERSION=0.8.37
+CRISPASR_TAG=v0.8.37
+CRISPASR_COMMIT=d08ec2dd83411a8389745c97c4f2e3955e084280
+CRISPASR_ASSET=crispasr-linux-x86_64-cuda.tar.gz
+CRISPASR_URL=https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.37/crispasr-linux-x86_64-cuda.tar.gz
+CRISPASR_SHA256=616298b500915608c48726eed6e4943f2ce5be368ae823e695142a6aa4cdc4b0
+CRISPASR_SIZE=165658111
+CRISPASR_CUDA_MAJOR=12
+# CPU-only build of the same release (fallback / CPU-backend comparison).
+CRISPASR_CPU_ASSET=crispasr-linux-x86_64.tar.gz
+CRISPASR_CPU_URL=https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.37/crispasr-linux-x86_64.tar.gz
+CRISPASR_CPU_SHA256=2da16802b081fe04b2ad564941b05850c9ceb931c2a1e4b0d84608919034df30
+# CUDA 12 runtime libraries (libcudart.so.12, libcublas*.so.12) if the host has none:
+# installed from NVIDIA's PyPI wheels into /srv/aerochorus/cuda12 (no system CUDA toolkit).
+CUDA12_WHEELS="nvidia-cuda-runtime-cu12==12.8.* nvidia-cublas-cu12==12.8.*"
+# Source-build fallback: CUDA 12.x toolkit, Pascal code generated explicitly.
+CRISPASR_BUILD_FLAGS="-DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61"

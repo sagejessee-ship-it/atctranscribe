@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,6 +30,7 @@ from aerochorus.db.models import (
     ArchitectureFamily,
     CorpusSource,
     Model,
+    ModelPlatformQualification,
     ModelSuite,
     ModelSuiteMember,
     Segment,
@@ -39,6 +41,7 @@ from aerochorus.db.models import (
     Worker,
 )
 from aerochorus.sweep_contracts import (
+    PLATFORM_BLOCKING,
     CatalogSync,
     CatalogSyncResult,
     ModelLineage,
@@ -49,6 +52,8 @@ from aerochorus.sweep_contracts import (
     ModelUpdate,
     PendingBatch,
     PendingSegment,
+    PlatformQualificationRead,
+    PlatformQualificationWrite,
     QualificationGate,
     QualificationRecord,
     ReflagResult,
@@ -59,6 +64,8 @@ from aerochorus.sweep_contracts import (
     SuiteWrite,
     SweepCreate,
     SweepModelRead,
+    SweepPreview,
+    SweepPreviewModel,
     SweepRead,
     SweepReport,
     SweepReportModel,
@@ -126,6 +133,7 @@ def model_read(model: Model) -> ModelRead:
         enabled=model.enabled,
         sweep_eligible=model.sweep_eligible,
         experimental=model.experimental,
+        ensemble_eligible=model.ensemble_eligible,
     )
 
 
@@ -175,6 +183,7 @@ def sync_catalog(session: Session, body: CatalogSync) -> CatalogSyncResult:
             "pedigree",
             "artifact_uri",
             "artifact_size_bytes",
+            "ensemble_eligible",
         ):
             setattr(existing, field, values[field])
         models_unchanged.append(entry.logical_name)
@@ -272,35 +281,49 @@ def write_suite(session: Session, name: str, body: SuiteWrite) -> ModelSuite:
 # --- sweep creation ---------------------------------------------------------------
 
 
-def create_sweep(session: Session, body: SweepCreate, *, allow_ineligible: bool) -> SweepRun:
-    suite = session.scalar(select(ModelSuite).where(ModelSuite.name == body.suite))
-    if suite is None:
-        raise NotFound(f"unknown suite: {body.suite}")
-    members = list(
-        session.scalars(
-            select(Model)
-            .join(ModelSuiteMember, ModelSuiteMember.model_id == Model.id)
-            .where(ModelSuiteMember.suite_id == suite.id)
-            .order_by(ModelSuiteMember.execution_order)
+def _resolve_models(session: Session, body: SweepCreate) -> tuple[ModelSuite, list[Model]]:
+    """The suite (named, or an ad-hoc suite recorded for an explicit list) and its models."""
+    if body.models:
+        by_name = {
+            m.logical_name: m
+            for m in session.scalars(select(Model).where(Model.logical_name.in_(body.models)))
+        }
+        missing = [n for n in body.models if n not in by_name]
+        if missing:
+            raise NotFound(f"unknown models: {', '.join(missing)}")
+        name = "adhoc-" + canonical_sha256(body.models)[:10]
+        suite = session.scalar(select(ModelSuite).where(ModelSuite.name == name))
+        if suite is None:
+            suite = write_suite(
+                session,
+                name,
+                SuiteWrite(description="Ad-hoc model list (Transcribe page)", models=body.models),
+            )
+        members = [by_name[n] for n in body.models]
+    else:
+        suite = session.scalar(select(ModelSuite).where(ModelSuite.name == body.suite))
+        if suite is None:
+            raise NotFound(f"unknown suite: {body.suite}")
+        members = list(
+            session.scalars(
+                select(Model)
+                .join(ModelSuiteMember, ModelSuiteMember.model_id == Model.id)
+                .where(ModelSuiteMember.suite_id == suite.id)
+                .order_by(ModelSuiteMember.execution_order)
+            )
         )
-    )
     models = [m for m in members if m.enabled]
     if not models:
-        raise Invalid(f"suite {body.suite} has no enabled models")
-    ineligible = [m.logical_name for m in models if not m.sweep_eligible]
-    if ineligible and not allow_ineligible:
-        raise Conflict(
-            f"not sweep-eligible (qualify them first, or allow unqualified models "
-            f"for a smoke/qualification sweep): {', '.join(ineligible)}"
-        )
+        raise Invalid(f"suite {suite.name} has no enabled models")
+    return suite, models
 
-    selection = body.selection
+
+def _selected_segment_ids(session: Session, selection, models: list[Model]) -> list[int]:
     source = session.scalar(
         select(CorpusSource).where(CorpusSource.logical_key == selection.source_key)
     )
     if source is None:
         raise NotFound(f"unknown corpus source: {selection.source_key}")
-
     query = select(Segment.id).where(
         Segment.source_id == source.id, Segment.presence_status == PresenceStatus.PRESENT
     )
@@ -316,15 +339,108 @@ def create_sweep(session: Session, body: SweepCreate, *, allow_ineligible: bool)
         query = query.where(Segment.duration_ms >= selection.min_duration_ms)
     if selection.max_duration_ms is not None:
         query = query.where(Segment.duration_ms <= selection.max_duration_ms)
+    if selection.untranscribed_only:
+        done = (
+            select(TranscriptionResult.segment_id)
+            .join(SweepRunModel, SweepRunModel.id == TranscriptionResult.sweep_run_model_id)
+            .where(SweepRunModel.model_id.in_([m.id for m in models]))
+            .group_by(TranscriptionResult.segment_id)
+            .having(func.count(func.distinct(SweepRunModel.model_id)) >= len(models))
+        )
+        query = query.where(Segment.id.not_in(done))
     if selection.limit is not None:
         sample_key = func.md5(func.concat(str(selection.seed), ":", Segment.id))
         query = query.order_by(sample_key).limit(selection.limit)
     chosen = select(Segment.id).where(Segment.id.in_(query.scalar_subquery()))
-    ordered = list(
+    return list(
         session.scalars(
             chosen.order_by(Segment.capture_start_utc.asc().nulls_last(), Segment.relative_path)
         )
     )
+
+
+def preview_sweep(session: Session, body: SweepCreate) -> SweepPreview:
+    """What a sweep would cover and roughly how long it takes; creates nothing."""
+    if body.models:
+        models = list(session.scalars(select(Model).where(Model.logical_name.in_(body.models))))
+        order = {n: i for i, n in enumerate(body.models)}
+        models.sort(key=lambda m: order[m.logical_name])
+        missing = set(body.models) - {m.logical_name for m in models}
+        if missing:
+            raise NotFound(f"unknown models: {', '.join(sorted(missing))}")
+    else:
+        _, models = _resolve_models(session, body)
+    ids = _selected_segment_ids(session, body.selection, models) if models else []
+    audio_ms = 0
+    if ids:
+        audio_ms = int(
+            session.scalar(
+                select(func.coalesce(func.sum(Segment.duration_ms), 0)).where(Segment.id.in_(ids))
+            )
+        )
+    rows = session.execute(
+        select(
+            SweepRunModel.model_id,
+            func.sum(SweepRunModel.inference_ms_total),
+            func.sum(SweepRunModel.audio_ms_total),
+        )
+        .where(SweepRunModel.audio_ms_total > 0)
+        .group_by(SweepRunModel.model_id)
+    )
+    rtf = {mid: float(inf) / float(aud) for mid, inf, aud in rows if aud}
+    # Loading a model takes ~10-60 s per run; one model resident at a time.
+    load_minutes = 1.0
+    out, total = [], 0.0
+    for m in models:
+        observed = rtf.get(m.id)
+        minutes = (audio_ms / 60000 * observed + load_minutes) if observed is not None else None
+        if minutes is not None:
+            total += minutes
+        out.append(
+            SweepPreviewModel(
+                logical_name=m.logical_name,
+                architecture_family=m.architecture_family,
+                enabled=m.enabled,
+                sweep_eligible=m.sweep_eligible,
+                ensemble_eligible=m.ensemble_eligible,
+                observed_rtf=round(observed, 4) if observed is not None else None,
+                estimated_minutes=round(minutes, 1) if minutes is not None else None,
+            )
+        )
+    warnings = []
+    if not ids:
+        warnings.append("the selection matches no segments")
+    if any(not m.enabled for m in models):
+        warnings.append("disabled models are skipped")
+    unknown = [m.logical_name for m in models if m.id not in rtf]
+    if unknown:
+        warnings.append(f"no speed history yet (estimate excludes): {', '.join(unknown)}")
+    families = {m.architecture_family for m in models}
+    if len(families) < len(models):
+        warnings.append(
+            "some models share an architecture family: they never count as independent agreement"
+        )
+    return SweepPreview(
+        segments=len(ids),
+        audio_minutes=round(audio_ms / 60000, 1),
+        models=out,
+        estimated_minutes=round(total, 1) if ids and len(unknown) < len(models) else None,
+        needs_unqualified=[m.logical_name for m in models if m.enabled and not m.sweep_eligible],
+        warnings=warnings,
+    )
+
+
+def create_sweep(session: Session, body: SweepCreate, *, allow_ineligible: bool) -> SweepRun:
+    suite, models = _resolve_models(session, body)
+    ineligible = [m.logical_name for m in models if not m.sweep_eligible]
+    if ineligible and not allow_ineligible:
+        raise Conflict(
+            f"not sweep-eligible (qualify them first, or allow unqualified models "
+            f"for a smoke/qualification sweep): {', '.join(ineligible)}"
+        )
+    selection = body.selection
+
+    ordered = _selected_segment_ids(session, selection, models)
     if not ordered:
         raise Invalid("the selection matches no segments")
 
@@ -459,12 +575,24 @@ def request_params(run: SweepRun, model: Model) -> dict[str, str]:
 
 
 def claim(
-    session: Session, worker: Worker, lease_seconds: int, source_keys: list[str] | None = None
+    session: Session,
+    worker: Worker,
+    lease_seconds: int,
+    source_keys: list[str] | None = None,
+    hardware_profile: str | None = None,
 ) -> SweepRunModel | None:
     now = utcnow()
     query = select(SweepRunModel).join(SweepRun, SweepRun.id == SweepRunModel.run_id)
     if source_keys is not None:
         query = query.where(SweepRun.selection_definition["source_key"].astext.in_(source_keys))
+    if hardware_profile:
+        # A model recorded as OOM/unsupported/failing on this profile is left for other
+        # workers; it never blocks the rest of the sweep (ADR-021).
+        blocked = select(ModelPlatformQualification.model_id).where(
+            ModelPlatformQualification.hardware_profile == hardware_profile,
+            ModelPlatformQualification.state.in_([s.value for s in PLATFORM_BLOCKING]),
+        )
+        query = query.where(SweepRunModel.model_id.not_in(blocked))
     candidate = session.scalar(
         query.where(
             SweepRun.status.in_([SweepStatus.QUEUED, SweepStatus.RUNNING]),
@@ -941,3 +1069,55 @@ def reflag_results(session: Session, batch_size: int = 2000) -> ReflagResult:
         session.flush()
         total += len(rows)
     return ReflagResult(flags_version=FLAGS_VERSION, reflagged=total)
+
+
+# --- hardware-profile qualification (ADR-021) ---------------------------------------------
+
+
+def platform_qualification_read(
+    row: ModelPlatformQualification, model: Model
+) -> PlatformQualificationRead:
+    return PlatformQualificationRead(
+        model=model.logical_name,
+        hardware_profile=row.hardware_profile,
+        architecture_family=model.architecture_family,
+        crisp_backend=model.crisp_backend,
+        state=row.state,
+        metrics=row.metrics or {},
+        notes=row.notes,
+        recorded_by=row.recorded_by,
+        updated_at=row.updated_at,
+    )
+
+
+def record_platform_qualification(
+    session: Session, logical_name: str, profile: str, body: PlatformQualificationWrite
+) -> PlatformQualificationRead:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_]*", profile):
+        raise Invalid(f"invalid hardware profile id: {profile!r}")
+    model = load_model(session, logical_name)
+    row = session.get(ModelPlatformQualification, (model.id, profile))
+    if row is None:
+        row = ModelPlatformQualification(model_id=model.id, hardware_profile=profile)
+        session.add(row)
+    row.state = body.state.value
+    row.metrics = body.metrics
+    row.notes = body.notes
+    row.recorded_by = body.recorded_by
+    row.updated_at = utcnow()
+    session.flush()
+    return platform_qualification_read(row, model)
+
+
+def list_platform_qualifications(
+    session: Session, profile: str | None = None
+) -> list[PlatformQualificationRead]:
+    query = select(ModelPlatformQualification, Model).join(
+        Model, Model.id == ModelPlatformQualification.model_id
+    )
+    if profile:
+        query = query.where(ModelPlatformQualification.hardware_profile == profile)
+    rows = session.execute(
+        query.order_by(ModelPlatformQualification.hardware_profile, Model.logical_name)
+    )
+    return [platform_qualification_read(row, model) for row, model in rows]

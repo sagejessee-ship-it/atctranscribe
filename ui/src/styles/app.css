@@ -1253,3 +1253,83 @@ a {
 .adsb td {
   white-space: nowrap;
 }
+
+/* --- transcribe page -------------------------------------------------------------------- */
+
+.page--wide {
+  max-width: none;
+}
+.transcribe {
+  display: grid;
+  grid-template-columns: minmax(520px, 1fr) minmax(480px, 1.2fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+@media (max-width: 1200px) {
+  .transcribe {
+    grid-template-columns: 1fr;
+  }
+}
+.transcribe__form .form__row {
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+.transcribe__scope,
+.transcribe__channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+.transcribe__untranscribed {
+  align-self: center;
+}
+.transcribe__model-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.transcribe__models td {
+  vertical-align: middle;
+}
+.transcribe__model--on td {
+  background: var(--row-selected);
+}
+.transcribe__preview {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: var(--text-sm);
+}
+.transcribe__warning {
+  font-size: var(--text-xs);
+}
+.runs__row td {
+  vertical-align: top;
+}
+.runs__scope {
+  font-size: var(--text-xs);
+}
+.runs__progress {
+  min-width: 260px;
+}
+.runs__models {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  font-size: var(--text-xs);
+}
+.runs__actions {
+  white-space: nowrap;
+}
+.bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+.bar__fill {
+  height: 100%;
+  background: var(--accent);
+}

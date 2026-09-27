@@ -163,8 +163,12 @@ def test_catalog_is_pinned_and_consistent():
         assert model.request_params.get("language") == "en"
     for suite in catalog.suites:
         assert set(suite.models) <= names
-    # Independence comes from families: the qualification roster spans all of them.
-    qualification = next(s for s in catalog.suites if s.name == "qualification")
+    # Independence comes from families: the Linux qualification roster spans all of them.
+    roster = next(s for s in catalog.suites if s.name == "qualify-linux1070")
     assert {
-        m.architecture_family for m in catalog.models if m.logical_name in qualification.models
+        m.architecture_family for m in catalog.models if m.logical_name in roster.models
     } == families
+    # New candidates are research-only until qualified (ADR-021).
+    voters = {m.logical_name for m in catalog.models if m.ensemble_eligible}
+    original = next(s for s in catalog.suites if s.name == "qualification")
+    assert set(original.models) <= voters

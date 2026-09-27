@@ -1,11 +1,13 @@
 # AeroChorus worker configuration (machine-local; never committed as worker.toml).
 #
 # Location: $AEROCHORUS_WORKER_CONFIG, or --config, or
-#   macOS/Linux: ~/.config/aerochorus/worker.toml
+#   Linux:   /etc/aerochorus/worker.toml (deploy/linux) or ~/.config/aerochorus/worker.toml
 #   Windows:     %APPDATA%\aerochorus\worker.toml
 
-worker_name = "m1-air"
+worker_name = "linux1070-worker"
 api_url = "http://127.0.0.1:8000"
+# Qualification applies per hardware profile; default = detected (never the hostname).
+# hardware_profile = "linux_pascal_8gb"
 
 # Seconds between heartbeats and scheduled scans in `aerochorus worker run`.
 heartbeat_interval_seconds = 30
@@ -21,29 +23,35 @@ process_sweeps = true
 
 # Logical source -> where it is mounted on THIS machine.
 [sources.home_atc_archive]
-root = "/Volumes/ATC"
+root = "/mnt/aerochorus/atc"
 auto_scan = true
 # Windows (literal string keeps the backslashes):
 # root = '\\192.168.68.84\bwi'
 
 [transcription]
 # Verified model artifacts (`aerochorus worker models pull`).
-models_dir = "/Users/me/aerochorus-data/models"
+models_dir = "/srv/aerochorus/models"
 # Raw CrispASR responses (.json.zst). Must NOT be inside a corpus source.
-artifact_root = "/Users/me/aerochorus-data/artifacts"
+artifact_root = "/srv/aerochorus/artifacts"
 # Logical store name used in artifact:// URIs.
-artifact_store = "m1-air"
+artifact_store = "linux1070"
 lease_seconds = 600
 pending_batch = 25
 auto_pull_models = false
 
-# --- macOS (M1): native Metal binary from the CrispASR release (ADR-005) ---
+# --- Linux + GTX 1070: pinned CUDA 12 binary (deploy/linux/install-crispasr.sh, ADR-021) ---
 [transcription.crispasr]
 launcher = "native"
-binary = "/Users/me/aerochorus-data/crispasr/crispasr"
+binary = "/srv/aerochorus/crispasr/current/crispasr"
 host_port = 8090
+env = { LD_LIBRARY_PATH = "/srv/aerochorus/crispasr/current:/srv/aerochorus/cuda12/nvidia/cuda_runtime/lib:/srv/aerochorus/cuda12/nvidia/cublas/lib" }
 
-# --- Windows/Linux + NVIDIA: the CrispASR CUDA server image instead ---
+# Per-model memory/offload (recorded with every run; nothing implicit):
+# [transcription.model_runtime."canary-qwen-2.5b-q4_k"]
+# strategy = "kv-q8"
+# env = { CRISPASR_KV_QUANT = "q8_0" }
+
+# --- Windows + NVIDIA (the 5080 box): the CrispASR CUDA server image instead ---
 # [transcription.crispasr]
 # launcher = "docker"
 # image = "ghcr.io/crispstrobe/crispasr@sha256:<digest>"   # pin; see runbook

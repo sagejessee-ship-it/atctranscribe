@@ -16,6 +16,12 @@ export function PrimaryNav({ onHelp }: { onHelp: () => void }) {
         Review
       </NavLink>
       <NavLink
+        to="/transcribe"
+        className={({ isActive }) => (isActive ? "nav__link nav__link--active" : "nav__link")}
+      >
+        Transcribe
+      </NavLink>
+      <NavLink
         to="/training"
         className={({ isActive }) => (isActive ? "nav__link nav__link--active" : "nav__link")}
       >

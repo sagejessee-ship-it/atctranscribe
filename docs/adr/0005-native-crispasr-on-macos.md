@@ -1,6 +1,9 @@
 # ADR-005: CrispASR runs natively on macOS
 
-Status: Accepted (2026-09-26)
+Status: Accepted (2026-09-26). **Superseded for deployment by
+[ADR-021](0021-linux-pascal-deployment.md) (2026-09-27):** the Mac is an
+Intel client, not an inference host. The native-binary launcher described
+here is kept; it now runs the pinned CUDA 12 build on the Linux host.
 
 ## Decision
 

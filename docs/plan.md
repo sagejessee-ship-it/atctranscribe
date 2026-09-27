@@ -31,6 +31,11 @@ of validated algorithms, regression tests and evaluation knowledge, and a
 compatibility reference. It does not become AeroChorus's deployment
 architecture.
 
+> **Superseded (2026-09-27, ADR-021):** the Mac is actually an Intel machine
+> with 8 GB of RAM and is only a browser client. The primary host is a Linux
+> desktop with a GTX 1070 (8 GB) and 32 GB of RAM. The priorities below still
+> apply to that host.
+
 **M1 MacBook Air (16 GB).** This becomes the primary background processing
 host. Priorities, in order: low operational burden, low power, unattended
 operation, resumability, correctness, throughput. Throughput is explicitly

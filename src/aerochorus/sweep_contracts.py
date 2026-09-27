@@ -85,6 +85,52 @@ class QualificationGate(StrEnum):
     PEDIGREE = "pedigree"
 
 
+class PlatformState(StrEnum):
+    """Outcome of qualifying one model on one hardware profile (ADR-021)."""
+
+    QUALIFIED = "qualified"
+    QUALIFIED_CPU_ONLY = "qualified_cpu_only"
+    QUALIFIED_WITH_OFFLOAD = "qualified_with_offload"
+    TOO_SLOW = "too_slow"
+    OOM = "oom"
+    BACKEND_FAILURE = "backend_failure"
+    UNSUPPORTED_ON_PLATFORM = "unsupported_on_platform"
+    NOT_RELEVANT = "not_relevant"
+    EXPERIMENTAL = "experimental"
+
+
+# A worker on this profile never claims these models (other profiles still may).
+PLATFORM_BLOCKING = (
+    PlatformState.OOM,
+    PlatformState.BACKEND_FAILURE,
+    PlatformState.UNSUPPORTED_ON_PLATFORM,
+    PlatformState.NOT_RELEVANT,
+)
+PLATFORM_QUALIFIED = (
+    PlatformState.QUALIFIED,
+    PlatformState.QUALIFIED_CPU_ONLY,
+    PlatformState.QUALIFIED_WITH_OFFLOAD,
+)
+
+
+class PlatformQualificationWrite(BaseModel):
+    state: PlatformState
+    # load_seconds, vram_*_mb, host_ram_peak_mb, device, inference_ms, audio_ms, rtf,
+    # non_empty_rate, errors, crashes, word_timestamps, token_confidence, flag rates,
+    # memory strategy, crispasr version/artifact, segments...
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+    recorded_by: str | None = None
+
+
+class PlatformQualificationRead(PlatformQualificationWrite):
+    model: str
+    hardware_profile: str
+    architecture_family: str
+    crisp_backend: str
+    updated_at: datetime
+
+
 class QualificationRecord(BaseModel):
     gate: QualificationGate
     passed: bool
@@ -114,6 +160,9 @@ class CatalogModel(BaseModel):
     pedigree: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
     experimental: bool = True
+    # May this model vote in ensemble agreement? Research-only models are collected
+    # and shown, but never counted (ADR-021).
+    ensemble_eligible: bool = True
 
     @model_validator(mode="after")
     def _artifact_and_lineage(self) -> CatalogModel:
@@ -173,12 +222,14 @@ class ModelRead(BaseModel):
     enabled: bool
     sweep_eligible: bool
     experimental: bool
+    ensemble_eligible: bool = True
 
 
 class ModelUpdate(BaseModel):
     enabled: bool | None = None
     sweep_eligible: bool | None = None
     experimental: bool | None = None
+    ensemble_eligible: bool | None = None
 
 
 class SuiteRead(BaseModel):
@@ -212,6 +263,8 @@ class SweepSelection(BaseModel):
     # Deterministic pseudo-random sample of at most `limit` segments.
     limit: int | None = Field(default=None, ge=1)
     seed: int = 0
+    # Skip segments that already have a result from every model of this sweep.
+    untranscribed_only: bool = False
 
     @field_validator("relative_dir")
     @classmethod
@@ -220,11 +273,41 @@ class SweepSelection(BaseModel):
 
 
 class SweepCreate(BaseModel):
-    suite: str
+    # A named suite, or an explicit ordered model list (an ad-hoc suite is recorded).
+    suite: str | None = None
+    models: list[str] = Field(default_factory=list)
     selection: SweepSelection
     name: str | None = None
     # Extra CrispASR request fields applied to every model (e.g. temperature).
     request_overrides: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _suite_or_models(self) -> SweepCreate:
+        if bool(self.suite) == bool(self.models):
+            raise ValueError("give either a suite or a list of models")
+        if len(set(self.models)) != len(self.models):
+            raise ValueError("models must not repeat")
+        return self
+
+
+class SweepPreviewModel(BaseModel):
+    logical_name: str
+    architecture_family: str
+    enabled: bool
+    sweep_eligible: bool
+    ensemble_eligible: bool
+    # Measured inference time / audio time from past sweeps (any worker), else None.
+    observed_rtf: float | None
+    estimated_minutes: float | None
+
+
+class SweepPreview(BaseModel):
+    segments: int
+    audio_minutes: float
+    models: list[SweepPreviewModel]
+    estimated_minutes: float | None
+    needs_unqualified: list[str]
+    warnings: list[str]
 
 
 class SweepModelRead(BaseModel):
@@ -271,6 +354,8 @@ class ClaimRequest(BaseModel):
     # Corpus sources this worker can read. Sweeps over other sources are never
     # offered to it (e.g. the ATCO2 benchmark exists only on the 5080 box).
     source_keys: list[str] | None = None
+    # Models recorded as blocked on this profile (oom, unsupported...) are skipped.
+    hardware_profile: str | None = None
 
 
 class ModelRunClaim(BaseModel):

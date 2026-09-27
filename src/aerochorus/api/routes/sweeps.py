@@ -19,6 +19,8 @@ from aerochorus.sweep_contracts import (
     ModelRunStart,
     ModelUpdate,
     PendingBatch,
+    PlatformQualificationRead,
+    PlatformQualificationWrite,
     QualificationRecord,
     ReflagResult,
     ResultAck,
@@ -26,6 +28,7 @@ from aerochorus.sweep_contracts import (
     SuiteRead,
     SuiteWrite,
     SweepCreate,
+    SweepPreview,
     SweepRead,
     SweepReport,
     TranscriptionRead,
@@ -89,6 +92,21 @@ def record_qualification(name: str, body: QualificationRecord, session: SessionD
     return svc.model_read(_call(session, lambda: svc.record_qualification(session, name, body)))
 
 
+@router.get("/qualifications", response_model=list[PlatformQualificationRead])
+def list_platform_qualifications(
+    session: SessionDep, profile: str | None = None
+) -> list[PlatformQualificationRead]:
+    """Model qualification per hardware profile (ADR-021)."""
+    return svc.list_platform_qualifications(session, profile)
+
+
+@router.put("/models/{name}/qualifications/{profile}", response_model=PlatformQualificationRead)
+def put_platform_qualification(
+    name: str, profile: str, body: PlatformQualificationWrite, session: SessionDep
+) -> PlatformQualificationRead:
+    return _call(session, lambda: svc.record_platform_qualification(session, name, profile, body))
+
+
 @router.get("/suites", response_model=list[SuiteRead])
 def list_suites(session: SessionDep) -> list[SuiteRead]:
     suites = session.scalars(select(ModelSuite).order_by(ModelSuite.name))
@@ -112,6 +130,12 @@ def create_sweep(
         session, lambda: svc.create_sweep(session, body, allow_ineligible=allow_unqualified)
     )
     return svc.sweep_read(session, run)
+
+
+@router.post("/sweeps/preview", response_model=SweepPreview)
+def preview_sweep(body: SweepCreate, session: SessionDep) -> SweepPreview:
+    """Segment count, audio minutes and a time estimate. Creates nothing."""
+    return _call(session, lambda: svc.preview_sweep(session, body), commit=False)
 
 
 @router.get("/sweeps", response_model=list[SweepRead])
@@ -174,7 +198,12 @@ def segment_results(segment_id: int, session: SessionDep) -> list[TranscriptionR
 @router.post("/sweeps/claim", response_model=ModelRunClaim | None)
 def claim(body: ClaimRequest, session: SessionDep, response: Response) -> ModelRunClaim | None:
     worker = _worker(session, body.worker_name)
-    srm = _call(session, lambda: svc.claim(session, worker, body.lease_seconds, body.source_keys))
+    srm = _call(
+        session,
+        lambda: svc.claim(
+            session, worker, body.lease_seconds, body.source_keys, body.hardware_profile
+        ),
+    )
     if srm is None:
         response.status_code = 204
         return None

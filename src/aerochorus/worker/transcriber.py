@@ -39,10 +39,12 @@ from aerochorus.worker.crispasr import (
     Launcher,
     Runtime,
     Server,
+    effective_memory,
     interpret,
     make_launcher,
 )
 from aerochorus.worker.fs import ReadOnlyCorpusReader, SourceUnavailable
+from aerochorus.worker.hardware import resolve_profile
 from aerochorus.worker.health import collect_health, heartbeat_from_health
 from aerochorus.worker.model_store import ModelArtifactError, ModelStore
 from aerochorus.worker.power import keep_awake
@@ -98,6 +100,7 @@ class SweepWorker:
         self.store = ModelStore(self.tc.models_dir)
         self.artifacts = ArtifactStore(self.tc.artifact_root, self.tc.artifact_store)
         self.launcher = launcher or make_launcher(self.tc.crispasr)
+        self.hardware_profile = resolve_profile(config.hardware_profile)
         self.stop = stop or threading.Event()
         self.readers = {
             key: ReadOnlyCorpusReader(mount.root) for key, mount in config.sources.items()
@@ -136,6 +139,7 @@ class SweepWorker:
                 worker_name=self.config.worker_name,
                 lease_seconds=self.tc.lease_seconds,
                 source_keys=sorted(self.config.sources),
+                hardware_profile=self.hardware_profile,
             )
         )
         if claim is None:
@@ -167,7 +171,9 @@ class SweepWorker:
         try:
             model_path = self._ensure_model(claim)
             runtime = self.launcher.runtime()
-            fingerprint = runtime.fingerprint(model.model_sha256 or "", model.crisp_backend)
+            overrides = self.tc.model_runtime.get(model.logical_name)
+            memory = effective_memory(self.tc.crispasr, overrides)
+            fingerprint = runtime.fingerprint(model.model_sha256 or "", model.crisp_backend, memory)
             if (
                 claim.runtime_fingerprint
                 and claim.runtime_fingerprint != fingerprint
@@ -181,7 +187,11 @@ class SweepWorker:
             log_path = self.log_dir / f"sweep{claim.sweep_id}-{model.logical_name}.log"
             started = time.monotonic()
             server = self.launcher.start(
-                model_path, model.crisp_backend, claim.request_params.get("language"), log_path
+                model_path,
+                model.crisp_backend,
+                claim.request_params.get("language"),
+                log_path,
+                overrides=overrides,
             )
             health = server.wait_ready(self.tc.crispasr.startup_timeout_seconds)
             self._verify_identity(claim, health, server)
@@ -192,7 +202,13 @@ class SweepWorker:
                 ModelRunStart(
                     worker_name=self.config.worker_name,
                     runtime=runtime.describe()
-                    | {"load_seconds": load_s, "server": server.describe, "health": health},
+                    | {
+                        "load_seconds": load_s,
+                        "server": server.describe,
+                        "health": health,
+                        "memory": memory,
+                        "hardware_profile": self.hardware_profile,
+                    },
                     runtime_fingerprint=fingerprint,
                     lease_seconds=self.tc.lease_seconds,
                 ),

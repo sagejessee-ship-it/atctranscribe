@@ -32,6 +32,8 @@ from aerochorus.sweep_contracts import (
     ModelRunStart,
     ModelUpdate,
     PendingBatch,
+    PlatformQualificationRead,
+    PlatformQualificationWrite,
     QualificationRecord,
     ResultAck,
     ResultPost,
@@ -205,6 +207,24 @@ class ApiClient:
             "PATCH", f"/api/v1/models/{name}", json=body.model_dump(exclude_none=True)
         )
         return ModelRead.model_validate(data)
+
+    def put_platform_qualification(
+        self, name: str, profile: str, body: PlatformQualificationWrite
+    ) -> PlatformQualificationRead:
+        data = self._request(
+            "PUT",
+            f"/api/v1/models/{name}/qualifications/{profile}",
+            json=body.model_dump(mode="json"),
+        )
+        return PlatformQualificationRead.model_validate(data)
+
+    def platform_qualifications(
+        self, profile: str | None = None
+    ) -> list[PlatformQualificationRead]:
+        data = self._request(
+            "GET", "/api/v1/qualifications", params={"profile": profile} if profile else None
+        )
+        return TypeAdapter(list[PlatformQualificationRead]).validate_python(data)
 
     def record_qualification(self, name: str, body: QualificationRecord) -> ModelRead:
         data = self._request(

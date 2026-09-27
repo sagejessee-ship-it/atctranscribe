@@ -72,7 +72,14 @@ class FakeLauncher:
     def runtime(self) -> Runtime:
         return Runtime("fake", {"version": self.version, "git_sha": "test"}, "sha256:fake")
 
-    def start(self, model_path: Path, backend: str, language: str | None, log_path: Path):
+    def start(
+        self,
+        model_path: Path,
+        backend: str,
+        language: str | None,
+        log_path: Path,
+        overrides=None,
+    ):
         server = FakeServer(
             backend=backend,
             model_path=model_path,

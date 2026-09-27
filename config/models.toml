@@ -10,8 +10,14 @@
 # `capabilities` record what each model returned through CrispASR 0.8.37's
 # server (verbose_json) on real BWI audio, 2026-09-27: per-word timestamps
 # for parakeet/canary/whisper; no model returns token probabilities there.
-# Quantization: q8_0 for small models, q4_k for 2-3B models so the whole
-# roster also fits the 16 GB M1.
+# Quantization: q8_0 for small models, q4_k for 2B+ models so every model
+# fits the GTX 1070's 8 GB with one model resident (ADR-021).
+#
+# Separate questions (ADR-021):
+#   * is it in this catalog?             -> a candidate AeroChorus may run
+#   * is it qualified on a profile?      -> `aerochorus models qualifications`
+#   * ensemble_eligible                  -> may it VOTE in agreement (research-only if false)
+#   * sweep_eligible (`models set`)      -> may full sweeps use it
 
 [families.parakeet]
 display_name = "NVIDIA Parakeet (FastConformer + TDT transducer)"
@@ -25,6 +31,22 @@ display_name = "Qwen3-ASR (audio encoder + Qwen3 LLM)"
 display_name = "IBM Granite Speech (Conformer + Q-Former + Granite LLM)"
 [families.voxtral]
 display_name = "Mistral Voxtral (Whisper encoder + Mistral LLM)"
+[families.canary-qwen]
+display_name = "NVIDIA Canary-Qwen (FastConformer encoder + Qwen LLM decoder)"
+[families.cohere-transcribe]
+display_name = "Cohere Transcribe (conformer encoder-decoder)"
+[families.kyutai-stt]
+display_name = "Kyutai STT (delayed-streams Mimi codec + transformer)"
+[families.glm-asr]
+display_name = "GLM-ASR (Whisper-style encoder + GLM LLM)"
+[families.fastconformer-ctc]
+display_name = "NVIDIA FastConformer CTC (non-autoregressive CTC decoder)"
+[families.wav2vec2]
+display_name = "wav2vec 2.0 XLS-R (self-supervised encoder + CTC)"
+[families.gemma4-audio]
+display_name = "Google Gemma 4 E2B (audio-capable LLM)"
+[families.omniasr]
+display_name = "Meta Omnilingual ASR (wav2vec2-style encoder + CTC)"
 
 [[models]]
 logical_name = "parakeet-tdt-0.6b-v3-q8_0"
@@ -150,6 +172,206 @@ capabilities = { word_timestamps = false, token_confidence = false }
 pedigree = { license = "Apache-2.0" }
 experimental = false
 
+
+# --- Linux GTX 1070 qualification roster (2026-09-27): candidates, not voters -----------
+# Not included: Moonshine and MiMo-ASR (need companion tokenizer files the registry
+# does not pin yet), FireRedASR (Mandarin-first), TTS and music backends.
+
+# Best single model on the ATCO2 re-score (Phase 4). Same family as qwen3-asr-0.6b:
+# never an independent vote alongside it (ADR-009).
+[[models]]
+logical_name = "qwen3-asr-1.7b-q4_k"
+architecture_family = "qwen3-asr"
+crisp_backend = "qwen3-1.7b"
+upstream_model = "Qwen/Qwen3-ASR-1.7B"
+artifact_repo = "cstr/qwen3-asr-1.7b-GGUF"
+upstream_revision = "674df5d44b50a63e7102a18895ed20e3f91de301"
+model_filename = "qwen3-asr-1.7b-q4_k.gguf"
+model_sha256 = "ec197cef7ccc589fdcae1becc3f4a3de119d0a41e790b898b519b1a048dad8d4"
+artifact_size_bytes = 1490915200
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+# F16 (8.9 GB) cannot fit 8 GB; q4_k only.
+[[models]]
+logical_name = "voxtral-mini-4b-realtime-q4_k"
+architecture_family = "voxtral"
+crisp_backend = "voxtral4b"
+upstream_model = "mistralai/Voxtral-Mini-4B-Realtime"
+artifact_repo = "cstr/voxtral-mini-4b-realtime-GGUF"
+upstream_revision = "1c61dc461970d53264d784363b31ca113c7e01fd"
+model_filename = "voxtral-mini-4b-realtime-q4_k.gguf"
+model_sha256 = "7dda1dba692f18c9d30a6064943b92c562853b399e96320929d2e1399c9d41cc"
+artifact_size_bytes = 2524137216
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+# Largest candidate (3.7 GB q4_k): the first to need KV quantization/offload on 8 GB.
+[[models]]
+logical_name = "canary-qwen-2.5b-q4_k"
+architecture_family = "canary-qwen"
+crisp_backend = "canary-qwen"
+upstream_model = "nvidia/canary-qwen-2.5b"
+artifact_repo = "cstr/canary-qwen-2.5b-GGUF"
+upstream_revision = "633d32e7415bb281ea159c60e20dd3ec61fb8ddf"
+model_filename = "canary-qwen-2.5b-q4_k.gguf"
+model_sha256 = "8f9e3a390b8a4b57dfc9df26a07ad5baaa1dba3ca928435120f2befac5574656"
+artifact_size_bytes = 3671972192
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+[[models]]
+logical_name = "cohere-transcribe-q4_k"
+architecture_family = "cohere-transcribe"
+crisp_backend = "cohere"
+upstream_model = "CohereLabs/cohere-transcribe-03-2026"
+artifact_repo = "cstr/cohere-transcribe-03-2026-GGUF"
+upstream_revision = "77234fcd7f77d271e5fc57f14fb05f260275558c"
+model_filename = "cohere-transcribe-q4_k.gguf"
+model_sha256 = "237261c543dc9124a3f08f95b48c9c672896ef0d79dc8cadce3fb4ddc09a2ef8"
+artifact_size_bytes = 1510363008
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+# CrispASR documents a CPU path for Kyutai STT.
+[[models]]
+logical_name = "kyutai-stt-1b-q8_0"
+architecture_family = "kyutai-stt"
+crisp_backend = "kyutai-stt"
+upstream_model = "kyutai/stt-1b-en_fr"
+artifact_repo = "cstr/kyutai-stt-1b-GGUF"
+upstream_revision = "ab83b1b3c788a8842e5ce5deebc6f6491545ead8"
+model_filename = "kyutai-stt-1b-q8_0.gguf"
+model_sha256 = "276f39cda5ea2c9d7705aee2103773cf7e696b3e6aa684c47c07d2efec3e39f5"
+artifact_size_bytes = 1173716544
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+[[models]]
+logical_name = "glm-asr-nano-q4_k"
+architecture_family = "glm-asr"
+crisp_backend = "glm-asr"
+upstream_model = "zai-org/GLM-ASR-Nano-2512"
+artifact_repo = "cstr/glm-asr-nano-GGUF"
+upstream_revision = "ef692d843f59538949dd137f0dad61b60a453d18"
+model_filename = "glm-asr-nano-q4_k.gguf"
+model_sha256 = "9e090376a77f82223f6264048884d0a6cb581e8ea191cb2e73b5b9974edb6e0d"
+artifact_size_bytes = 1325316448
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+# Tiny English CTC model: a cheap, structurally different error pattern.
+[[models]]
+logical_name = "fastconformer-ctc-large-q8_0"
+architecture_family = "fastconformer-ctc"
+crisp_backend = "fastconformer-ctc"
+upstream_model = "nvidia/stt_en_fastconformer_ctc_large"
+artifact_repo = "cstr/stt-en-fastconformer-ctc-large-GGUF"
+upstream_revision = "2eb77792d5831888acc530ee78c0a245b101aa21"
+model_filename = "stt-en-fastconformer-ctc-large-q8_0.gguf"
+model_sha256 = "d56c6a5fcae8e281f1da503f0125f6c5fdc5aa615552a749aa77d6a670cefdd7"
+artifact_size_bytes = 124128736
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+[[models]]
+logical_name = "wav2vec2-xlsr-53-en-q8_0"
+architecture_family = "wav2vec2"
+crisp_backend = "wav2vec2"
+upstream_model = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
+artifact_repo = "cstr/wav2vec2-large-xlsr-53-english-GGUF"
+upstream_revision = "3de5f69700e163286eaae85952fba9bf4ab761f6"
+model_filename = "wav2vec2-xlsr-en-q8_0.gguf"
+model_sha256 = "ea0a37ad9d184280d07b81d252425a59071146c09c5fbce0ce06141e53fdefe6"
+artifact_size_bytes = 373175456
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+[[models]]
+logical_name = "gemma4-e2b-it-q4_k"
+architecture_family = "gemma4-audio"
+crisp_backend = "gemma4-e2b"
+upstream_model = "google/gemma-4-e2b-it"
+artifact_repo = "cstr/gemma4-e2b-it-GGUF"
+upstream_revision = "22f55582b68e5029a3e3920aae61589bb0b690f5"
+model_filename = "gemma4-e2b-it-q4_k.gguf"
+model_sha256 = "c287047ab867cd38acab7b8a5d47e07f7d7260a6fa130138742398a8c80b848a"
+artifact_size_bytes = 2793146016
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+[[models]]
+logical_name = "omniasr-ctc-1b-v2-q8_0"
+architecture_family = "omniasr"
+crisp_backend = "omniasr"
+upstream_model = "facebook/omniASR-CTC-1B-v2"
+artifact_repo = "cstr/omniASR-CTC-1B-v2-GGUF"
+upstream_revision = "317880194be65674e7b27efba10273be1afeb9f1"
+model_filename = "omniasr-ctc-1b-v2-q8_0.gguf"
+model_sha256 = "c399f172e60bf03e487e55e4b117111d861f35826bf9953ff4d6f60efb5b0dec"
+artifact_size_bytes = 1056083168
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
+# Q4_K Parakeet for broad sweeps on 8 GB (same family as the q8_0 variant).
+[[models]]
+logical_name = "parakeet-tdt-0.6b-v3-q4_k"
+architecture_family = "parakeet"
+crisp_backend = "parakeet"
+upstream_model = "nvidia/parakeet-tdt-0.6b-v3"
+artifact_repo = "cstr/parakeet-tdt-0.6b-v3-GGUF"
+upstream_revision = "dff69b0e675921ffd5a6133f5fbe2aac690d3ec3"
+model_filename = "parakeet-tdt-0.6b-v3-q4_k.gguf"
+model_sha256 = "addef407ab841eef45739e78920fd8c00e63f78eaa823c490e600e0ab58080a1"
+artifact_size_bytes = 417894912
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+capabilities = { word_timestamps = true, token_confidence = false }
+experimental = true
+# Research-only until qualified on linux_pascal_8gb and reviewed.
+ensemble_eligible = false
+
 # Suites are ordered rosters. full-lab-v1 is populated only from models that
 # pass qualification (see docs/runbook.md, "Qualify models").
 [suites.smoke]
@@ -179,3 +401,54 @@ models = [
 [suites.canary-variants]
 description = "Decoding variants of canary-1b-v2 (evaluate one at a time; same family)"
 models = ["canary-1b-v2-q8_0-beam4"]
+
+# --- Linux GTX 1070 host (ADR-021) -------------------------------------------------------
+# One CUDA-path and one CPU-path backend prove both runtime paths on real audio.
+[suites.smoke-linux1070]
+description = "Setup smoke test on linux_pascal_8gb: Whisper (CUDA) + Parakeet"
+models = ["whisper-large-v3-turbo-q8_0", "parakeet-tdt-0.6b-v3-q8_0"]
+
+# Provisional until qualification on the 1070: four independent families that already
+# agree well on BWI audio. Revise from `aerochorus models qualifications`.
+[suites.core-atc-linux1070]
+description = "Core ATC ensemble on linux_pascal_8gb (provisional; see qualification report)"
+models = [
+    "parakeet-tdt-0.6b-v3-q8_0",
+    "canary-1b-v2-q8_0",
+    "whisper-large-v3-turbo-q8_0",
+    "qwen3-asr-0.6b-q8_0",
+]
+
+# Every architecture-diverse English candidate, for `aerochorus worker qualify`.
+# Not a production suite.
+[suites.qualify-linux1070]
+description = "Every candidate, for qualification on linux_pascal_8gb (not a production suite)"
+models = [
+    "parakeet-tdt-0.6b-v3-q8_0",
+    "parakeet-tdt-0.6b-v3-q4_k",
+    "canary-1b-v2-q8_0",
+    "whisper-large-v3-turbo-q8_0",
+    "qwen3-asr-0.6b-q8_0",
+    "qwen3-asr-1.7b-q4_k",
+    "granite-speech-4.1-2b-q4_k",
+    "voxtral-mini-3b-2507-q4_k",
+    "voxtral-mini-4b-realtime-q4_k",
+    "canary-qwen-2.5b-q4_k",
+    "cohere-transcribe-q4_k",
+    "kyutai-stt-1b-q8_0",
+    "glm-asr-nano-q4_k",
+    "fastconformer-ctc-large-q8_0",
+    "wav2vec2-xlsr-53-en-q8_0",
+    "gemma4-e2b-it-q4_k",
+    "omniasr-ctc-1b-v2-q8_0",
+]
+
+# Rewritten from qualification results on the 1070; never assumed. Provisional = core.
+[suites.full-qualified-linux1070]
+description = "Models qualified on linux_pascal_8gb (provisional until the qualification run)"
+models = [
+    "parakeet-tdt-0.6b-v3-q8_0",
+    "canary-1b-v2-q8_0",
+    "whisper-large-v3-turbo-q8_0",
+    "qwen3-asr-0.6b-q8_0",
+]

@@ -96,12 +96,17 @@ def test_real_catalog_loads(api, source):
 
     catalog = load_catalog(Path(__file__).resolve().parents[2] / "config" / "models.toml")
     result = api.sync_models(catalog)
-    assert len(result.models_created) == 7
-    families = {m.architecture_family for m in api.list_models()}
-    assert len(families) == 6  # the beam-search Canary variant shares the canary family
+    assert len(result.models_created) == 18
+    models = api.list_models()
+    families = {m.architecture_family for m in models}
+    assert len(families) == 14  # variants (beam search, q4_k, 1.7b) share their family
+    # Only the established roster votes; new candidates are research-only (ADR-021).
+    assert sum(m.ensemble_eligible for m in models) == 7
     suites = {s.name: s.models for s in api.list_suites()}
     assert suites["smoke"] == ["parakeet-tdt-0.6b-v3-q8_0"]
     assert len(suites["qualification"]) == 6
+    assert suites["smoke-linux1070"] == ["whisper-large-v3-turbo-q8_0", "parakeet-tdt-0.6b-v3-q8_0"]
+    assert len(suites["qualify-linux1070"]) == 17
 
 
 def test_full_sweeps_require_qualified_models(api, lab):

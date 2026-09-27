@@ -41,6 +41,7 @@ WRITERS = {
     "atco2.py",
     "faa_nasr.py",
     "dataset_export.py",
+    "cli_deploy.py",  # writes an operator-requested inventory report (--out)
 }
 
 
@@ -87,7 +88,7 @@ def test_source_audio_cannot_be_modified():
                 isinstance(node, ast.Attribute)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "shutil"
-                and node.attr != "which"
+                and node.attr not in ("which", "disk_usage")
             ):
                 violations.append(f"{path.name}:{node.lineno} uses shutil.{node.attr}")
             if not isinstance(node, ast.Call):

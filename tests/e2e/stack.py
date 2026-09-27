@@ -227,6 +227,7 @@ def seed(app, corpus_root: Path, offline_root: Path) -> None:
                 architecture_family=family,
                 crisp_backend="e2e",
                 model_filename=f"{name}.gguf",
+                enabled=True,
             )
             for name, family in MODELS.items()
         }

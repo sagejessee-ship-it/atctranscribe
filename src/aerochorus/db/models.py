@@ -40,7 +40,7 @@ from aerochorus.contracts import (
 )
 from aerochorus.db.base import Base
 from aerochorus.review_contracts import ReviewStatus, TextOrigin, TrainingLabel
-from aerochorus.sweep_contracts import ModelRunStatus, ResultStatus, SweepStatus
+from aerochorus.sweep_contracts import ModelRunStatus, PlatformState, ResultStatus, SweepStatus
 
 _EMPTY_OBJECT = text("'{}'::jsonb")
 _FALSE = text("false")
@@ -266,7 +266,7 @@ class Model(Base):
     artifact_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     # CrispASR request fields this model always needs (language, source_lang, ...).
     request_params: Mapped[dict[str, str]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
-    # word_timestamps, token_confidence, diarization, metal, ...
+    # word_timestamps, token_confidence, diarization, ...
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
     # training data, benchmark contamination, licence, lineage of fine-tunes...
     pedigree: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
@@ -276,6 +276,8 @@ class Model(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     sweep_eligible: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     experimental: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    # Votes in ensemble agreement (research-only models are recorded, not counted).
+    ensemble_eligible: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (
@@ -794,4 +796,26 @@ class ContextSnapshot(Base):
         CheckConstraint("kind IN ('adsb')", name="kind"),
         CheckConstraint("t_end > t_start", name="window"),
         Index("ix_context_snapshot_segment", "segment_id", "kind", "fetched_at"),
+    )
+
+
+# --- hardware-profile qualification (ADR-021) ------------------------------------------------
+
+
+class ModelPlatformQualification(Base):
+    """Whether a model runs usefully on one hardware profile, with the evidence."""
+
+    __tablename__ = "model_platform_qualification"
+
+    model_id: Mapped[int] = mapped_column(ForeignKey("model.id"), primary_key=True)
+    hardware_profile: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    notes: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        CheckConstraint(_in("state", PlatformState), name="state"),
+        CheckConstraint("hardware_profile ~ '^[a-z0-9][a-z0-9_]*$'", name="profile_format"),
     )

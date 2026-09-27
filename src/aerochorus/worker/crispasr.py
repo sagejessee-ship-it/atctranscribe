@@ -3,8 +3,12 @@
 One server per model: start it with the model loaded, transcribe the whole
 window through it, stop it. Two launchers share the same HTTP contract:
 
-* ``native`` spawns the ``crispasr`` binary (macOS Metal; Windows/Linux CUDA);
+* ``native`` spawns a pinned ``crispasr`` binary (the Linux CUDA 12 build on the
+  GTX 1070 host, ADR-021; Windows CUDA; CPU builds);
 * ``docker`` runs the published CrispASR server image with GPU passthrough.
+
+Per-model memory/offload settings (``ModelRuntime``) are applied at launch and
+recorded with the run; none is ever enabled implicitly.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from aerochorus.worker.config import CrispAsrConfig
+from aerochorus.worker.config import CrispAsrConfig, ModelRuntime
 
 log = logging.getLogger(__name__)
 
@@ -60,16 +64,51 @@ class Runtime:
             "artifact": self.artifact,
         }
 
-    def fingerprint(self, model_sha256: str, backend: str) -> str:
-        """Same CrispASR build + same model artifact => comparable results."""
-        identity = {
+    def fingerprint(
+        self, model_sha256: str, backend: str, memory: dict[str, Any] | None = None
+    ) -> str:
+        """Same CrispASR build + same model artifact (+ same memory settings) => comparable."""
+        identity: dict[str, Any] = {
             "crispasr_version": self.version,
             "git_sha": self.build.get("git_sha"),
             "artifact": self.artifact,
             "model_sha256": model_sha256,
             "backend": backend,
         }
+        # KV quantization/offload can change numerics. Only present when configured,
+        # so fingerprints of runs without overrides are unchanged.
+        if memory and (memory.get("env") or memory.get("extra_args")):
+            identity["memory"] = {"env": memory.get("env"), "extra_args": memory.get("extra_args")}
         return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+MEMORY_ENV_PREFIXES = ("CRISPASR_", "GGML_")
+
+
+def effective_memory(config: CrispAsrConfig, overrides: ModelRuntime | None) -> dict[str, Any]:
+    """The memory/offload settings a launch will use (recorded with every run)."""
+    merged = config.env | (overrides.env if overrides else {})
+    env = {k: v for k, v in merged.items() if k.startswith(MEMORY_ENV_PREFIXES)}
+    return {
+        "strategy": overrides.strategy if overrides else "default",
+        "env": dict(sorted(env.items())),
+        "extra_args": list(config.extra_args) + (list(overrides.extra_args) if overrides else []),
+    }
+
+
+# CrispASR/ggml log lines that reveal where a model ran and why it died.
+_CUDA_MARKERS = ("ggml_cuda_init", "using cuda", "cuda backend", "cuda0", "cublas")
+_OOM_MARKERS = ("out of memory", "cudamalloc failed", "failed to allocate")
+_ARCH_MARKERS = ("no kernel image is available", "unsupported gpu architecture")
+
+
+def classify_log(text: str) -> dict[str, bool]:
+    low = (text or "").lower()
+    return {
+        "cuda": any(m in low for m in _CUDA_MARKERS),
+        "oom": any(m in low for m in _OOM_MARKERS),
+        "arch_unsupported": any(m in low for m in _ARCH_MARKERS),
+    }
 
 
 @dataclass
@@ -150,7 +189,12 @@ class Launcher(Protocol):
     def runtime(self) -> Runtime: ...
 
     def start(
-        self, model_path: Path, backend: str, language: str | None, log_path: Path
+        self,
+        model_path: Path,
+        backend: str,
+        language: str | None,
+        log_path: Path,
+        overrides: ModelRuntime | None = None,
     ) -> Server: ...
 
 
@@ -181,7 +225,14 @@ class NativeLauncher:
             artifact=f"sha256:{_hash_file(self.binary)}",
         )
 
-    def start(self, model_path: Path, backend: str, language: str | None, log_path: Path) -> Server:
+    def start(
+        self,
+        model_path: Path,
+        backend: str,
+        language: str | None,
+        log_path: Path,
+        overrides: ModelRuntime | None = None,
+    ) -> Server:
         args = [
             str(self.binary),
             "--server",
@@ -197,13 +248,16 @@ class NativeLauncher:
         if language:
             args += ["-l", language]
         args += self.config.extra_args
+        if overrides:
+            args += overrides.extra_args
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_file = open(log_path, "ab")  # noqa: SIM115 - owned by the server lifetime
         env = None
-        if self.config.env:
+        extra_env = self.config.env | (overrides.env if overrides else {})
+        if extra_env:
             import os
 
-            env = os.environ | self.config.env
+            env = os.environ | extra_env
         proc = subprocess.Popen(
             args, stdout=log_file, stderr=subprocess.STDOUT, cwd=self.binary.parent, env=env
         )
@@ -224,7 +278,7 @@ class NativeLauncher:
             request_timeout=self.config.request_timeout_seconds,
             stop_fn=stop,
             alive_fn=lambda: proc.poll() is None,
-            describe={"pid": proc.pid, "args": args},
+            describe={"pid": proc.pid, "args": args, "log": str(log_path)},
         )
 
 
@@ -261,9 +315,16 @@ class DockerLauncher:
             artifact=inspect.stdout.strip(),
         )
 
-    def start(self, model_path: Path, backend: str, language: str | None, log_path: Path) -> Server:
+    def start(
+        self,
+        model_path: Path,
+        backend: str,
+        language: str | None,
+        log_path: Path,
+        overrides: ModelRuntime | None = None,
+    ) -> Server:
         self._docker("rm", "-f", self.name)
-        extra = " ".join(self.config.extra_args)
+        extra = " ".join(self.config.extra_args + (overrides.extra_args if overrides else []))
         args = [
             "run",
             "-d",
@@ -284,7 +345,7 @@ class DockerLauncher:
             "-e",
             f"CRISPASR_EXTRA_ARGS={extra}",
         ]
-        for key, value in self.config.env.items():
+        for key, value in (self.config.env | (overrides.env if overrides else {})).items():
             args += ["-e", f"{key}={value}"]
         if self.config.gpus:
             args += ["--gpus", self.config.gpus]
@@ -311,7 +372,7 @@ class DockerLauncher:
             request_timeout=self.config.request_timeout_seconds,
             stop_fn=stop,
             alive_fn=alive,
-            describe={"container": self.name, "image": self.config.image},
+            describe={"container": self.name, "image": self.config.image, "log": str(log_path)},
         )
 
 

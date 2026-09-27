@@ -28,11 +28,12 @@ class SourceMount(BaseModel):
 
 
 class CrispAsrConfig(BaseModel):
-    """How this machine runs CrispASR (ADR-005: native on the Mac)."""
+    """How this machine runs CrispASR (ADR-021: a pinned native binary on the Linux host)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # "native": spawn the crispasr binary (macOS Metal, Windows/Linux CUDA builds).
+    # "native": spawn a pinned crispasr binary (Linux CUDA 12 on the GTX 1070 host,
+    # Windows CUDA, CPU builds). Put LD_LIBRARY_PATH for the CUDA 12 runtime in `env`.
     # "docker": run the CrispASR server image (Linux/Windows hosts with NVIDIA GPUs).
     launcher: Literal["native", "docker"] = "native"
     binary: Path | None = None
@@ -43,6 +44,23 @@ class CrispAsrConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     startup_timeout_seconds: float = 900.0
     request_timeout_seconds: float = 600.0
+
+
+class ModelRuntime(BaseModel):
+    """Per-model CrispASR memory/offload settings for THIS machine (ADR-021).
+
+    Escalation, in order: quantized weights (pick the artifact), quantized KV
+    (CRISPASR_KV_QUANT[_K/_V]), partial layer residency (CRISPASR_N_GPU_LAYERS),
+    KV on CPU (CRISPASR_KV_ON_CPU=1), CPU fallback. Nothing is enabled
+    implicitly; whatever is set here is recorded with every run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # A short label recorded with results, e.g. "kv-q8", "offload-24-layers", "cpu".
+    strategy: str = "default"
+    env: dict[str, str] = Field(default_factory=dict)
+    extra_args: list[str] = Field(default_factory=list)
 
 
 class TranscriptionConfig(BaseModel):
@@ -62,6 +80,8 @@ class TranscriptionConfig(BaseModel):
     pending_batch: int = Field(default=25, ge=1, le=1000)
     # Download a missing model when a sweep needs it (otherwise: `worker models pull`).
     auto_pull_models: bool = False
+    # Per-model memory/offload settings, keyed by logical model name.
+    model_runtime: dict[str, ModelRuntime] = Field(default_factory=dict)
 
 
 class WorkerConfig(BaseModel):
@@ -69,6 +89,9 @@ class WorkerConfig(BaseModel):
 
     worker_name: str = Field(default_factory=socket.gethostname)
     api_url: str = "http://127.0.0.1:8000"
+    # Hardware profile qualification applies to (e.g. "linux_pascal_8gb"). Default:
+    # derived from the detected hardware (`aerochorus worker inventory`), never a hostname.
+    hardware_profile: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]*$")
     heartbeat_interval_seconds: float = 30.0
     incremental_scan_interval_seconds: float = 900.0
     full_scan_interval_seconds: float = 86_400.0

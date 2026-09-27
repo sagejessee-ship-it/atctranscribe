@@ -252,6 +252,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="cmd", required=True
     )
     cli_transcription.register_worker(worker)
+    from aerochorus import cli_deploy
+
+    cli_deploy.register_worker(worker)
     p = worker.add_parser("health", help="report worker health (and send a heartbeat)")
     p.add_argument("--config", type=Path)
     p.set_defaults(func=cmd_worker_health)

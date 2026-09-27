@@ -571,6 +571,13 @@ Ctrl-C: the active model run is released and resumes later.
 
 ## 10. Moving the control plane to the M1
 
+> **Superseded (2026-09-27, ADR-021).** The Mac is an Intel client with 8 GB
+> of RAM, not a server. The primary host is the Linux desktop with the GTX
+> 1070; see
+> [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md)
+> and [deployment/MIGRATION.md](deployment/MIGRATION.md). The rest of this
+> section is kept for history.
+
 The target layout: the **M1 runs the control plane and the archive worker**,
 and **this PC stays a GPU/benchmark worker** pointed at the M1. Nothing in
 the code assumes which machine is which. Workers are identified by name, and

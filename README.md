@@ -5,26 +5,38 @@ radio audio. It runs that audio through a suite of open-source ASR models and
 keeps every hypothesis with full provenance.
 
 The founding plan is in [docs/plan.md](docs/plan.md), and the decisions in
-force are in [docs/adr/](docs/adr/README.md). **Status:** Phases 0–4 are done:
-corpus index, the model registry, resumable multi-model sweeps through
-CrispASR, and ATCO2 regression evaluation with isolated gold, all driven from
-the CLI.
+force are in [docs/adr/](docs/adr/README.md). **Status:** Phases 0–5 are done:
 
-**Operating it:** see [docs/runbook.md](docs/runbook.md) for setup, health
-checks, tests, indexing, models, sweeps, qualification and troubleshooting.
+- the corpus index;
+- the model registry;
+- resumable multi-model sweeps through CrispASR;
+- ATCO2 regression evaluation;
+- the review workbench (web UI);
+- partial-span annotation;
+- versioned training datasets;
+- on-demand ADS-B context.
+
+**Deployment:** a Linux host with a GTX 1070 (ADR-021). See
+[docs/deployment/](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
+**Operating it:** [docs/runbook.md](docs/runbook.md).
 
 ```
-Linux collector ──SMB (read-only)──▶ native worker ──HTTP──▶ API ──▶ PostgreSQL
- (RTLSDR-Airband)                    observes files          interprets, writes
+ALIENWARE COLLECTOR ──SMB, read-only──▶ LINUX HOST (GTX 1070 8 GB, 32 GB RAM) ◀──HTTP── LAN browsers
+ SDR capture, segmentation             PostgreSQL + API (Docker)                        (Intel Mac, PCs)
+ immutable source audio                review edge: web UI + audio (systemd)
+                                       worker + pinned CUDA 12 CrispASR (systemd)
+                                       models, artifacts, exports, backups (/srv/aerochorus)
 ```
 
 - **Control plane** (Docker Compose): PostgreSQL 17 and the FastAPI service.
   It is the only writer to the database.
-- **Worker** (native Python, runs on the Mac): scans the mounted archive
-  read-only and reports observations to the API. It also runs CrispASR with
-  one model at a time: the native Metal binary on the Mac, or the CUDA image
-  on NVIDIA hosts. Results go to the API; raw responses go to a local
+- **Worker** (native Python, systemd): scans the mounted archive read-only
+  and reports observations to the API. It also runs CrispASR with one model
+  at a time: the pinned CUDA 12 binary on the Linux host, or the CUDA image
+  on the Windows 5080 box. Results go to the API; raw responses go to a local
   `.json.zst` artifact store.
+- **Review edge** (native, systemd): serves the web UI on the LAN, proxies
+  the API, and streams source audio read-only.
 
 ## Layout
 
@@ -69,7 +81,7 @@ uv run aerochorus source add home_atc_archive --name "Home ATC archive (BWI)" \
 
 Map the source to a path on this machine. Copy
 [config/worker.example.toml](config/worker.example.toml) to
-`~/.config/aerochorus/worker.toml` (macOS/Linux) or
+`~/.config/aerochorus/worker.toml` or `/etc/aerochorus/worker.toml` (Linux) or
 `%APPDATA%\aerochorus\worker.toml` (Windows), or point
 `AEROCHORUS_WORKER_CONFIG` at it. Then:
 
@@ -90,13 +102,15 @@ uv run aerochorus worker transcribe
 uv run aerochorus sweep show 1 && uv run aerochorus sweep transcripts 1 --limit 5
 ```
 
-### On the M1 MacBook Air
+### On the Linux host
 
-Mount the share read-only, for example
-`mount_smbfs -o rdonly //user@192.168.68.84/bwi /Volumes/ATC`, ideally with an
-SMB account that only has read rights. Then set `root = "/Volumes/ATC"` in
-`worker.toml`. While a scan runs, the worker holds a `caffeinate -i`
-assertion, so the Mac can still sleep when it is idle.
+Mount the collector's share read-only at `/mnt/aerochorus/atc` (see
+[deploy/linux/fstab.example](deploy/linux/fstab.example)), then run
+`deploy/linux/setup.sh`. It inventories the hardware, installs the pinned
+CUDA 12 CrispASR, and starts the services. It then smoke-tests one CUDA
+backend and one CPU backend on real segments, and prints the LAN URL. The
+full walkthrough is
+[docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
 
 ## Tests
 

@@ -497,6 +497,9 @@ def register(groups: argparse._SubParsersAction, api_opt) -> None:
     api_opt(p)
     json_opt(p)
     p.set_defaults(func=cmd_models_qualify)
+    from aerochorus import cli_deploy
+
+    cli_deploy.register_models(models, api_opt, json_opt)
     p = models.add_parser("set", help="enable/disable a model or mark it sweep-eligible")
     p.add_argument("name")
     group = p.add_mutually_exclusive_group()

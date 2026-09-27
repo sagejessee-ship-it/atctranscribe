@@ -35,7 +35,11 @@ def latest_results(session: Session, segment_ids: list[int]):
         select(TranscriptionResult.segment_id, TranscriptionResult, Model)
         .join(SweepRunModel, SweepRunModel.id == TranscriptionResult.sweep_run_model_id)
         .join(Model, Model.id == SweepRunModel.model_id)
-        .where(TranscriptionResult.segment_id.in_(segment_ids))
+        .where(
+            TranscriptionResult.segment_id.in_(segment_ids),
+            # Research-only models are collected and shown, never counted (ADR-021).
+            Model.ensemble_eligible.is_(True),
+        )
         .ext(distinct_on(TranscriptionResult.segment_id, Model.id))
         .order_by(
             TranscriptionResult.segment_id,

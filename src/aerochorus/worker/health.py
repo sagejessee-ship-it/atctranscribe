@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import socket
 import sys
+import time
 from typing import Any
 
 from aerochorus import __version__
@@ -51,8 +52,47 @@ def collect_health(config: WorkerConfig, client: ApiClient | None) -> dict[str, 
         "python": sys.version.split()[0],
         "api": api,
         "sources": sources,
-        # Reported once the CrispASR integration exists (Phase 2).
         "crispasr": None,
+        "hardware": _hardware(config),
+    }
+
+
+_INVENTORY: tuple[float, Any] | None = None
+INVENTORY_TTL_SECONDS = 600
+
+
+def _inventory():
+    """Hardware changes rarely: probe (nvidia-smi etc.) at most every ten minutes."""
+    global _INVENTORY
+    from aerochorus.worker.hardware import collect_inventory
+
+    now = time.monotonic()
+    if _INVENTORY is None or now - _INVENTORY[0] > INVENTORY_TTL_SECONDS:
+        _INVENTORY = (now, collect_inventory())
+    return _INVENTORY[1]
+
+
+def _hardware(config: WorkerConfig) -> dict[str, Any]:
+    from aerochorus.worker.hardware import resolve_profile
+
+    try:
+        inventory = _inventory()
+    except Exception as exc:  # noqa: BLE001 - health must never fail on a probe
+        return {"error": str(exc)}
+    gpus = [
+        {"name": g.name, "compute_capability": g.compute_capability,
+         "memory_total_mb": g.memory_total_mb, "driver": g.driver_version}
+        for g in inventory.gpus
+    ]  # fmt: skip
+    return {
+        "profile": resolve_profile(config.hardware_profile),
+        "os": inventory.os_pretty,
+        "kernel": inventory.kernel,
+        "cpu": inventory.cpu_model,
+        "cpu_cores": inventory.cpu_cores,
+        "ram_total_mb": inventory.ram_total_mb,
+        "gpus": gpus,
+        "cuda_driver": inventory.cuda_driver_version,
     }
 
 
@@ -62,5 +102,7 @@ def heartbeat_from_health(config: WorkerConfig, health: dict[str, Any]) -> Worke
         hostname=health["hostname"],
         platform=health["platform"],
         version=health["version"],
-        health={k: health[k] for k in ("status", "machine", "python", "sources", "crispasr")},
+        health={
+            k: health[k] for k in ("status", "machine", "python", "sources", "crispasr", "hardware")
+        },
     )
