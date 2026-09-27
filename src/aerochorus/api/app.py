@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 
 from aerochorus import __version__
+from aerochorus.api.context import make_provider
 from aerochorus.api.routes import (
+    context,
     datasets,
     evaluation,
     health,
@@ -21,6 +23,8 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = make_engine(settings.database_url)
     app.state.sessionmaker = make_sessionmaker(app.state.engine)
+    # None when OpenSky credentials are absent: review works, ADS-B says "not configured".
+    app.state.adsb_provider = make_provider(settings)
 
     app.include_router(health.router)
     app.include_router(sources.router, prefix="/api/v1")
@@ -30,4 +34,5 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     app.include_router(evaluation.router, prefix="/api/v1")
     app.include_router(review.router, prefix="/api/v1")
     app.include_router(datasets.router, prefix="/api/v1")
+    app.include_router(context.router, prefix="/api/v1")
     return app

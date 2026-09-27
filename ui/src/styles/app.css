@@ -1238,3 +1238,18 @@ a {
 .datasets td {
   vertical-align: top;
 }
+
+/* --- ADS-B context (Phase 5C) ----------------------------------------------------------- */
+
+.note--neutral {
+  background: var(--neutral-bg);
+}
+.adsb__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--text-sm);
+}
+.adsb td {
+  white-space: nowrap;
+}

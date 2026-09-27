@@ -341,3 +341,49 @@ export interface TrainingSummary {
   by_channel: { channel: string | null; label: TrainingLabel; items: number }[];
   by_day: { day: string | null; label: TrainingLabel; items: number }[];
 }
+
+// --- on-demand ADS-B context (src/aerochorus/api/context.py) ---------------------------
+
+export interface AdsbAircraft {
+  icao24: string;
+  callsign: string | null;
+  time: number;
+  offset_s: number;
+  lat: number | null;
+  lon: number | null;
+  distance_nm: number | null;
+  baro_altitude_ft: number | null;
+  geo_altitude_ft: number | null;
+  heading_deg: number | null;
+  velocity_kt: number | null;
+  vertical_rate_fpm: number | null;
+  on_ground: boolean | null;
+  squawk: string | null;
+}
+
+export interface AdsbSnapshot {
+  id: number;
+  segment_id: number;
+  provider: string;
+  source: string;
+  fetched_at: string;
+  t_start: string;
+  t_end: string;
+  radius_nm: number;
+  row_count: number;
+  response_sha256: string;
+  query: Record<string, unknown>;
+  provider_meta: Record<string, unknown>;
+  aircraft: AdsbAircraft[];
+  cached: boolean;
+}
+
+export interface AdsbStatus {
+  configured: boolean;
+  provider: string | null;
+  message: string | null;
+  window_before_s: number;
+  window_after_s: number;
+  radius_nm: number;
+  snapshot: AdsbSnapshot | null;
+}

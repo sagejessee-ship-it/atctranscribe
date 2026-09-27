@@ -8,6 +8,11 @@ const repo = path.resolve(import.meta.dirname, "..");
 const python =
   process.env.AEROCHORUS_E2E_PYTHON ??
   path.join(repo, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+const stack = path.join(repo, "tests", "e2e", "stack.py");
+const plainPort = port + 1;
+const plainDb =
+  process.env.AEROCHORUS_E2E_PLAIN_DATABASE_URL ??
+  "postgresql+psycopg://aerochorus:aerochorus@127.0.0.1:5432/aerochorus_e2e_plain";
 // Use an installed Edge/Chrome when present (no browser download); else `npx playwright install chromium`.
 const channel = process.env.PW_CHANNEL ?? (process.platform === "win32" ? "msedge" : undefined);
 
@@ -25,11 +30,22 @@ export default defineConfig({
     trace: "retain-on-failure",
     launchOptions: { args: ["--autoplay-policy=no-user-gesture-required", "--mute-audio"] },
   },
-  webServer: {
-    command: `"${python}" "${path.join(repo, "tests", "e2e", "stack.py")}" --port ${port}`,
-    url: `http://127.0.0.1:${port}/edge/health`,
-    reuseExistingServer: false,
-    timeout: 120_000,
-    stdout: "pipe",
-  },
+  webServer: [
+    {
+      // Main stack: seeded corpus + a deterministic fake OpenSky provider.
+      command: `"${python}" "${stack}" --port ${port} --fake-adsb`,
+      url: `http://127.0.0.1:${port}/edge/health`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+    },
+    {
+      // Same corpus, no ADS-B provider configured (own database).
+      command: `"${python}" "${stack}" --port ${plainPort} --database-url ${plainDb}`,
+      url: `http://127.0.0.1:${plainPort}/edge/health`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: "pipe",
+    },
+  ],
 });

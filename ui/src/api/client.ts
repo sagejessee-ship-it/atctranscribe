@@ -1,4 +1,6 @@
 import type {
+  AdsbSnapshot,
+  AdsbStatus,
   AnnotationSave,
   DatasetCreate,
   DatasetView,
@@ -73,6 +75,9 @@ export const api = {
   trainingSummary: () => request<TrainingSummary>("GET", "/api/v1/training/summary"),
   datasets: () => request<DatasetView[]>("GET", "/api/v1/datasets"),
   createDataset: (body: DatasetCreate) => request<DatasetView>("POST", "/api/v1/datasets", body),
+  adsbStatus: (id: number) => request<AdsbStatus>("GET", `/api/v1/context/adsb/${id}`),
+  adsbFetch: (id: number, refresh = false) =>
+    request<AdsbSnapshot>("POST", `/api/v1/context/adsb/${id}${refresh ? "?refresh=true" : ""}`),
 };
 
 export const audioUrl = (segmentId: number) => `/audio/${segmentId}`;

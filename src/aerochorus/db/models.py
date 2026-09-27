@@ -760,3 +760,38 @@ class TrainingDatasetItem(Base):
         ),
         Index("ix_training_dataset_item_segment", "segment_id"),
     )
+
+
+# --- on-demand context (Phase 5C) ---------------------------------------------------------------
+
+
+class ContextSnapshot(Base):
+    """A cached, segment-local answer from an external context provider (ADR-020).
+
+    Never a continuous archive: one row per explicit fetch/refresh for one segment.
+    """
+
+    __tablename__ = "context_snapshot"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"))
+    kind: Mapped[str] = mapped_column(Text)  # 'adsb'
+    provider: Mapped[str] = mapped_column(Text)  # 'opensky-trino'
+    source: Mapped[str] = mapped_column(Text)  # 'minio.osky.state_vectors_data4'
+    query: Mapped[dict[str, Any]] = mapped_column(JSONB)  # effective, bounded parameters
+    query_sha256: Mapped[str] = mapped_column(Text)
+    t_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    t_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    radius_nm: Mapped[float] = mapped_column(Double)
+    row_count: Mapped[int] = mapped_column(Integer)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSONB)  # {"columns": [...], "rows": [...]}
+    response_sha256: Mapped[str] = mapped_column(Text)
+    summary: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+    provider_meta: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    fetched_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('adsb')", name="kind"),
+        CheckConstraint("t_end > t_start", name="window"),
+        Index("ix_context_snapshot_segment", "segment_id", "kind", "fetched_at"),
+    )

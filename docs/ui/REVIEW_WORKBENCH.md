@@ -85,6 +85,12 @@ The inspector sections, top to bottom:
 8. **Airport context** (collapsed): identifiers, reference point, runway
    ends with spoken forms, voice frequencies (the current channel is
    highlighted), and provenance.
+9. **ADS-B context** (collapsed, on demand). "Fetch ADS-B context" queries
+   OpenSky historical state vectors for this segment's UTC ±60 s, within
+   10 nm. It shows a nearby-aircraft table and provenance. Reopening uses the
+   cached snapshot, and "Refresh context" queries again. If credentials are
+   not configured, the panel says so and everything else works. See
+   [OPENSKY_PROVIDER.md](../context/OPENSKY_PROVIDER.md).
 
 ## Filters and search (all server-side)
 
@@ -183,7 +189,8 @@ shows `sample_id` with a banner, and batch actions can target the sample.
 
 ## API
 
-The workbench uses `/api/v1/review/*`, `/api/v1/airports/*` and
+The workbench uses `/api/v1/review/*`, `/api/v1/airports/*`,
+`/api/v1/datasets*`, `/api/v1/training/summary`, `/api/v1/context/adsb/*` and
 `/api/v1/agreement/refresh`. See `http://127.0.0.1:8000/docs`.
 
 ## Tests
@@ -194,7 +201,11 @@ The workbench uses `/api/v1/review/*`, `/api/v1/airports/*` and
 | frontend unit | `cd ui && npm test` |
 | end-to-end | `cd ui && npm run build && npx playwright test` |
 
-The end-to-end suite starts `tests/e2e/stack.py`. It recreates the
-`aerochorus_e2e` database, seeds a synthetic corpus, and serves everything
-on :8765. On Windows it uses the installed Edge. Elsewhere, run `npx
+The end-to-end suite starts two `tests/e2e/stack.py` instances:
+
+- :8765 on `aerochorus_e2e`, with a deterministic fake OpenSky provider;
+- :8766 on `aerochorus_e2e_plain`, with no ADS-B.
+
+Each recreates its database, seeds a synthetic corpus, and serves everything
+from one process. On Windows it uses the installed Edge. Elsewhere, run `npx
 playwright install chromium` once, or set `PW_CHANNEL=chrome`.

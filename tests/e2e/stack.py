@@ -281,11 +281,34 @@ def seed(app, corpus_root: Path, offline_root: Path) -> None:
         assert db.query(Segment).count() == len(CORPUS) + len(OFFLINE)
 
 
+class FakeOpenSky:
+    """Deterministic stand-in for the Trino provider (no network). Counts calls."""
+
+    name = "fake-opensky"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def fetch(self, query):
+        from aerochorus.context.opensky import COLUMNS, ProviderResult
+
+        self.calls += 1
+        t = query.segment_utc
+        rows = [
+            [t + 2, "a8b1c2", "AAL2669 ", 39.19, -76.67, 30.0, 35.0, 7.5, 330.0, 0.0, True, "2201", t],  # noqa: E501
+            [t - 9, "a0f00d", "SWA456  ", 39.25, -76.72, 1219.2, 1250.0, 102.9, 150.0, 5.1, False, "4312", t],  # noqa: E501
+        ]  # fmt: skip
+        return ProviderResult(list(COLUMNS), rows, {"query_id": f"fake-{self.calls}"})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--static", type=Path, default=ROOT / "ui" / "dist")
+    parser.add_argument(
+        "--fake-adsb", action="store_true", help="serve a deterministic fake OpenSky provider"
+    )
     args = parser.parse_args()
     import os
 
@@ -297,6 +320,12 @@ def main() -> None:
     build_corpus(offline_root, OFFLINE)
 
     control = create_app(ControlPlaneSettings(database_url=url))
+    control.state.adsb_provider = None  # never the real OpenSky from a test stack
+    if args.fake_adsb:
+        fake = FakeOpenSky()
+        control.state.adsb_provider = fake
+        # Test-only: lets the browser suite prove that cached snapshots are reused.
+        control.add_api_route("/api/__e2e/adsb-calls", lambda: {"calls": fake.calls})
     seed(control, corpus_root, offline_root)
 
     upstream = httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://cp")

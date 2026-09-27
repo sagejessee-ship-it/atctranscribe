@@ -150,3 +150,23 @@ Also delivered with 5B:
 - ADR-019 lineage plus the qualification gate (`models qualify`,
   `test_model_lineage.py`).
 
+## Status: Phase 5C complete (2026-09-27)
+
+| # | 5C acceptance criterion | Evidence |
+| --- | --- | --- |
+| 1 | ADS-B context does not query automatically | `test_fetch_is_explicit_bounded_cached_and_refreshable` (status and segment open make no calls); E2E call counter |
+| 2 | The button fetches context for the selected segment | E2E "ADS-B fetched on demand…" |
+| 3 | Old-data lookup uses Trino | `minio.osky.state_vectors_data4` via the Trino statement protocol; `test_rest_states_all_is_never_used` |
+| 4 | Query is tightly bounded in time and space | `test_query_is_tightly_bounded_in_time_space_and_partitions`, `test_broad_scans_are_refused` |
+| 5 | Result is cached | `context_snapshot` (migration 0006) |
+| 6 | Reopening uses the cache without another call | integration + E2E (reload, same snapshot id, call count unchanged) |
+| 7 | Refresh performs a new query | integration + E2E (new snapshot id, call count +1) |
+| 8 | Missing credentials do not break review | `test_unconfigured_provider_keeps_review_working`; E2E on the unconfigured stack |
+| 9 | Provider failure cannot lose annotations | `test_provider_failure_stores_nothing_and_loses_no_annotation` |
+| 10 | Query and source provenance displayed | provenance line: source table, window, radius, hours, vectors, response hash, snapshot id |
+| 11 | No map or bulk ADS-B archive | none added (ADR-020) |
+
+**Not verified live:** no OpenSky credentials were available. Auth and
+endpoints follow OpenSky's Trino docs and the pyopensky source. The first
+real fetch is the remaining check.
+

@@ -7,6 +7,7 @@ import type { Hypothesis, SegmentReview } from "../api/types";
 import { Badge } from "../components/badges";
 import { ErrorBox, IconButton, Kbd } from "../components/ui";
 import { fmtDuration, fmtFreq, fmtLocal, fmtUtc } from "../lib/format";
+import { AdsbContext } from "./AdsbContext";
 import { AgreementSummary } from "./AgreementSummary";
 import { AirportContext } from "./AirportContext";
 import { CorrectionEditor, type EditorHandle } from "./CorrectionEditor";
@@ -184,6 +185,7 @@ export function SegmentInspector({
       <SpanPanel segment={segment} selection={span} baseline={baseline} onSelection={setSpan} onSaved={onToast} />
       <NeighborContext neighbors={segment.neighbors} onOpen={onOpen} onBeforePlay={() => player.current?.pause()} />
       <AirportContext profile={segment.airport_profile} frequencyHz={segment.frequency_hz} />
+      <AdsbContext segmentId={segment.segment_id} hasUtc={segment.capture_start_utc != null} />
     </div>
   );
 }

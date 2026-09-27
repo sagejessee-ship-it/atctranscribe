@@ -732,3 +732,19 @@ uv run aerochorus models sync                                     # models.toml 
 uv run aerochorus models qualify <name> smoke --passed --evidence '{"sweep": 12}'
 uv run aerochorus models set <name> --eligible                    # refused until all 7 gates pass
 ```
+
+### ADS-B context (Phase 5C, optional)
+
+Details: [docs/context/OPENSKY_PROVIDER.md](context/OPENSKY_PROVIDER.md).
+
+```bash
+# ./.env (gitignored) — read by docker compose for the api service
+AEROCHORUS_OPENSKY_USERNAME=<opensky user>
+AEROCHORUS_OPENSKY_PASSWORD=<opensky password>
+# optional: AEROCHORUS_ADSB_WINDOW_BEFORE_S=60 AEROCHORUS_ADSB_WINDOW_AFTER_S=60 AEROCHORUS_ADSB_RADIUS_NM=10
+```
+
+Then run `docker compose up -d`. Without these, the inspector's ADS-B panel
+says "not configured" and nothing else changes. The container needs outbound
+HTTPS to `auth.opensky-network.org` and `trino.opensky-network.org`.
+

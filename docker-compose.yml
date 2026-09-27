@@ -34,6 +34,9 @@ services:
     command: ["aerochorus", "api", "serve", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       AEROCHORUS_DATABASE_URL: postgresql+psycopg://aerochorus:aerochorus@postgres:5432/aerochorus
+      # Optional on-demand ADS-B context (ADR-020): put these in ./.env (gitignored).
+      AEROCHORUS_OPENSKY_USERNAME: ${AEROCHORUS_OPENSKY_USERNAME:-}
+      AEROCHORUS_OPENSKY_PASSWORD: ${AEROCHORUS_OPENSKY_PASSWORD:-}
     ports:
       # Loopback by default. On the host that serves remote workers (e.g. the
       # M1 serving the 5080 box), set AEROCHORUS_API_BIND to its LAN address.

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,9 +16,14 @@ class ControlPlaneSettings(BaseSettings):
     # Order-aware similarity at or above which two hypotheses "near-match"
     # (review workbench). Similarity, never a probability; recorded per row.
     near_match_threshold: float = 0.8
-    # Optional OpenSky Trino credentials (Phase 5C); absent means "not configured".
+    # On-demand ADS-B context (ADR-020). Optional OpenSky Trino credentials; absent or
+    # empty means "not configured". They stay on the control plane, never in responses.
     opensky_username: str | None = None
-    opensky_password: str | None = None
+    opensky_password: SecretStr | None = None
+    opensky_timeout_s: float = 120.0
+    adsb_window_before_s: int = 60
+    adsb_window_after_s: int = 60
+    adsb_radius_nm: float = 10.0
 
 
 @lru_cache
