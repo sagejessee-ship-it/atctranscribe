@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Columns3, Dices, PanelLeft, PanelRight, RefreshCw, Search, X } from "lucide-react";
+import { Columns3, Dices, PanelLeft, PanelRight, RefreshCw, Search, Sparkles, X } from "lucide-react";
 
 import type { Facets, ReviewFilters, SavedView, SearchScope } from "../api/types";
 import { Button, IconButton, Menu } from "../components/ui";
@@ -174,6 +174,7 @@ export function CorpusToolbar({
   onFilters,
   onView,
   onSample,
+  onAdjudicate,
   onColumn,
   onRefresh,
   onToggleRail,
@@ -191,6 +192,7 @@ export function CorpusToolbar({
   onFilters: (patch: Partial<ReviewFilters>) => void;
   onView: (view: SavedView | null) => void;
   onSample: () => void;
+  onAdjudicate?: () => void;
   onColumn: (id: string, visible: boolean) => void;
   onRefresh: () => void;
   onToggleRail: () => void;
@@ -211,6 +213,11 @@ export function CorpusToolbar({
       <Button size="sm" onClick={onSample} title="Deterministic sample from the current filters">
         <Dices size={13} aria-hidden /> Sample N
       </Button>
+      {onAdjudicate ? (
+        <Button size="sm" onClick={onAdjudicate} title="Send a random sample of the current filters to Gemini (priced and capped first)">
+          <Sparkles size={13} aria-hidden /> Adjudicate…
+        </Button>
+      ) : null}
       <Menu.Root>
         <Menu.Trigger asChild>
           <IconButton label="Columns">

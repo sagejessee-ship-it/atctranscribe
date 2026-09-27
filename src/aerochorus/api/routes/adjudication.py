@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Request
 
 from aerochorus.adjudication_contracts import (
@@ -11,6 +13,7 @@ from aerochorus.adjudication_contracts import (
     AdjudicationPreview,
     AdjudicationPreviewRequest,
     AdjudicationResultPost,
+    AdjudicationStatus,
     ClaimedAdjudication,
 )
 from aerochorus.api import adjudication as svc
@@ -18,6 +21,22 @@ from aerochorus.api.deps import SessionDep
 from aerochorus.api.routes.sweeps import _call
 
 router = APIRouter(tags=["adjudication"])
+
+
+@router.get("/adjudication-status", response_model=AdjudicationStatus)
+def status(request: Request) -> AdjudicationStatus:
+    """Default model, limits, and which runners are polling (none: batches wait)."""
+    state = request.app.state
+    s = state.settings
+    return AdjudicationStatus(
+        default_model=s.adjudication_model,
+        runners=state.adjudication_runners.recent(datetime.now(UTC)),
+        limits={
+            "max_items": s.adjudication_max_items,
+            "max_batch_usd": s.adjudication_max_batch_usd,
+            "max_audio_s": s.adjudication_max_audio_s,
+        },
+    )
 
 
 @router.post("/adjudications/preview", response_model=AdjudicationPreview)

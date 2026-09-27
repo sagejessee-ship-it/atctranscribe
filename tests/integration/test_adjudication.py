@@ -169,8 +169,11 @@ def test_claims_reserve_worst_case_cost_and_stop_at_the_cap(http, seeded, pricin
     assert detail["counts"] == {"done": 1, "skipped": 2}
     assert all("cost cap" in i["error"] for i in detail["items"] if i["status"] == "skipped")
     assert detail["spent_usd"] <= detail["max_cost_usd"]
-    # The runner shows up in previews once it has polled.
+    # The runner shows up in previews and status once it has polled.
     assert [r["runner"] for r in preview(http, ids)["runners"]] == ["r1"]
+    status = http.get("/api/v1/adjudication-status").json()
+    assert status["default_model"] == "~google/gemini-pro-latest"
+    assert [r["runner"] for r in status["runners"]] == ["r1"]
 
 
 def test_runner_sends_audio_and_context_and_records_results(http, api, seeded, pricing, audio):  # noqa: F811

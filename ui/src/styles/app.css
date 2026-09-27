@@ -1553,3 +1553,105 @@ a {
 .adsb tr[data-hi="true"] td {
   background: var(--row-selected);
 }
+
+/* --- model adjudication (ADR-022) --------------------------------------------------------- */
+
+.adjudicate__checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+.adjudicate__of {
+  align-self: flex-end;
+  padding-bottom: var(--space-3);
+}
+.adjudicate__plan {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.adjudicate__plan.is-stale {
+  opacity: 0.6;
+}
+.adjudicate__confirm {
+  align-items: flex-start;
+  padding: var(--space-4);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  font-size: var(--text-md);
+}
+.adjudicate__confirm input {
+  margin-top: 2px;
+}
+.adj-item {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--border);
+}
+.adj-item:first-of-type {
+  border-top: 0;
+}
+.adj-item__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+}
+.adj-item__text {
+  margin: var(--space-3) 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.adj-item__meta {
+  font-size: var(--text-sm);
+}
+.adj-item__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.adj-page {
+  display: grid;
+  grid-template-columns: minmax(420px, 0.8fr) minmax(480px, 1.2fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+.adj-page__intro {
+  max-width: 860px;
+  margin-bottom: var(--space-4);
+}
+.adj-batches__row {
+  cursor: pointer;
+}
+.adj-batches__row.is-selected td {
+  background: var(--row-selected);
+}
+.adj-batches .bar {
+  width: 120px;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: var(--space-3);
+}
+.adj-batch__actions {
+  display: inline-flex;
+  gap: var(--space-3);
+}
+.linklike {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.linklike:hover {
+  text-decoration: underline;
+}
+@media (max-width: 1100px) {
+  .adj-page {
+    grid-template-columns: 1fr;
+  }
+}

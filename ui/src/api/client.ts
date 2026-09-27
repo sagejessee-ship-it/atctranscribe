@@ -38,7 +38,7 @@ function describe(detail: unknown): string {
   return JSON.stringify(detail);
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {

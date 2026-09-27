@@ -285,6 +285,17 @@ def seed(app, corpus_root: Path, offline_root: Path) -> None:
         assert db.query(Segment).count() == len(CORPUS) + len(OFFLINE)
 
 
+class FixedPricing:
+    """Adjudication prices without the network (USD per million tokens)."""
+
+    def get(self, model: str):
+        from aerochorus.adjudication_contracts import Pricing
+
+        return Pricing(
+            model=model, source="e2e fixed prices", prompt=2.0, completion=12.0, audio=2.0
+        )
+
+
 class FakeOpenSky:
     """Deterministic stand-in for the Trino provider (no network). Counts calls."""
 
@@ -362,6 +373,7 @@ def main() -> None:
 
     control = create_app(ControlPlaneSettings(database_url=url))
     control.state.adsb_provider = None  # never the real OpenSky from a test stack
+    control.state.pricing_book = FixedPricing()  # never OpenRouter's price list either
     if args.fake_adsb:
         fake = FakeOpenSky()
         control.state.adsb_provider = fake

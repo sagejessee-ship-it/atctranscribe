@@ -92,6 +92,12 @@ class RunnerSeen(BaseModel):
     last_seen: datetime
 
 
+class AdjudicationStatus(BaseModel):
+    default_model: str
+    runners: list[RunnerSeen]  # seen polling in the last five minutes
+    limits: dict[str, float]
+
+
 class AdjudicationPreview(BaseModel):
     model: str
     prompt_version: int

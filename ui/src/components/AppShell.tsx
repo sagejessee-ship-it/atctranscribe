@@ -27,6 +27,12 @@ export function PrimaryNav({ onHelp }: { onHelp: () => void }) {
       >
         Training Sets
       </NavLink>
+      <NavLink
+        to="/adjudicate"
+        className={({ isActive }) => (isActive ? "nav__link nav__link--active" : "nav__link")}
+      >
+        Adjudication
+      </NavLink>
       <span className="nav__spacer" />
       <Button
         variant="ghost"

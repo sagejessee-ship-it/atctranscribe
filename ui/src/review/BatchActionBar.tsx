@@ -32,10 +32,12 @@ export function BatchActionBar({
   selectedIds,
   onClear,
   onDone,
+  onAdjudicate,
 }: {
   selectedIds: number[];
   onClear: () => void;
   onDone: (message: string) => void;
+  onAdjudicate?: (ids: number[]) => void;
 }) {
   const client = useQueryClient();
   const [annotator] = useAnnotator();
@@ -60,6 +62,11 @@ export function BatchActionBar({
       <Button size="sm" variant="ghost" onClick={() => batch.mutate("clear")} disabled={batch.isPending}>
         Remove candidate/silver
       </Button>
+      {onAdjudicate ? (
+        <Button size="sm" onClick={() => onAdjudicate(selectedIds)} title="Price and send to Gemini (asks before spending)">
+          Adjudicate…
+        </Button>
+      ) : null}
       <span className="muted batchbar__note">Gold is set per segment after listening.</span>
       <span className="toolbar__spacer" />
       <Button size="sm" variant="ghost" onClick={onClear}>

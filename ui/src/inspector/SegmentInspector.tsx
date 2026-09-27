@@ -7,6 +7,7 @@ import type { Hypothesis, SegmentReview } from "../api/types";
 import { Badge } from "../components/badges";
 import { ErrorBox, IconButton, Kbd } from "../components/ui";
 import { fmtDuration, fmtFreq, fmtLocal, fmtUtc } from "../lib/format";
+import { AdjudicationPanel } from "./AdjudicationPanel";
 import { AdsbContext } from "./AdsbContext";
 import { AgreementSummary } from "./AgreementSummary";
 import { AirportContext } from "./AirportContext";
@@ -95,6 +96,7 @@ export function SegmentInspector({
   onNext,
   onOpen,
   onToast,
+  onAdjudicate,
 }: {
   segmentId: number | null;
   commands: MutableRefObject<InspectorCommands | null>;
@@ -102,6 +104,7 @@ export function SegmentInspector({
   onNext?: () => void;
   onOpen: (id: number) => void;
   onToast: (message: string) => void;
+  onAdjudicate?: (segmentId: number) => void;
 }) {
   const query = useQuery({
     queryKey: ["segment", segmentId],
@@ -212,6 +215,12 @@ export function SegmentInspector({
         selectedId={baseline?.result_id ?? null}
         onSelect={setSelectedHyp}
         onUse={(text) => editor.current?.useText(text, true)}
+      />
+      <AdjudicationPanel
+        segment={segment}
+        onUse={(text) => editor.current?.useText(text, true)}
+        onAdjudicate={onAdjudicate ? () => onAdjudicate(segment.segment_id) : undefined}
+        onToast={onToast}
       />
       <CorrectionEditor ref={editor} segment={segment} baseline={baseline} onSaved={onToast} />
       <SpanPanel segment={segment} selection={span} baseline={baseline} onSelection={setSpan} onSaved={onToast} />

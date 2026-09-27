@@ -12,6 +12,7 @@ import { fmtCount } from "../lib/format";
 import { BatchActionBar } from "./BatchActionBar";
 import { ActiveFilterChips, CorpusToolbar } from "./CorpusToolbar";
 import { FilterRail } from "./FilterRail";
+import { AdjudicateDialog } from "./AdjudicateDialog";
 import { SampleDialog } from "./SampleDialog";
 import { COLUMN_LABELS, SegmentDataGrid } from "./SegmentDataGrid";
 import { PAGE_SIZES, useReviewState } from "./useReviewState";
@@ -50,6 +51,8 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
     readPref("inspectorWidth", Math.round(Math.min(560, Math.max(380, window.innerWidth * 0.38)))),
   );
   const [sampling, setSampling] = useState(false);
+  // null: closed; [] : a sample of the current filters; ids: those segments.
+  const [adjudicating, setAdjudicating] = useState<number[] | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const commands = useRef<InspectorCommands | null>(null);
   const pendingSelect = useRef<"first" | "last" | null>(null);
@@ -220,6 +223,7 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
         onFilters={patchFilters}
         onView={applyView}
         onSample={() => setSampling(true)}
+        onAdjudicate={() => setAdjudicating([])}
         onColumn={(id, visible) => setVisibility({ ...visibility, [id]: visible })}
         onRefresh={() => client.invalidateQueries()}
         onToggleRail={() => setRailOpen((v) => !v)}
@@ -236,7 +240,12 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
           </span>
         </div>
       ) : null}
-      <BatchActionBar selectedIds={selectedIds} onClear={() => setSelection({})} onDone={setToast} />
+      <BatchActionBar
+        selectedIds={selectedIds}
+        onClear={() => setSelection({})}
+        onDone={setToast}
+        onAdjudicate={(ids) => setAdjudicating(ids)}
+      />
       <div className="review__body">
         {railOpen ? <FilterRail filters={state.filters} facets={facets.data} onChange={patchFilters} /> : null}
         <div className="review__grid">
@@ -320,6 +329,7 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
                 onPrev={canPrev ? () => move(-1) : undefined}
                 onNext={canNext ? () => move(1) : undefined}
                 onOpen={(id) => select(id)}
+                onAdjudicate={(id) => setAdjudicating([id])}
                 onToast={setToast}
               />
             </div>
@@ -329,6 +339,16 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
       <div className="toast" role="status" aria-live="polite">
         {toast}
       </div>
+      <AdjudicateDialog
+        open={adjudicating != null}
+        onOpenChange={(open) => !open && setAdjudicating(null)}
+        segmentIds={adjudicating ?? undefined}
+        filters={state.filters}
+        total={page.data?.total}
+        onCreated={(batch) =>
+          setToast(`Adjudication batch #${batch.id} queued: ${batch.item_count} segments, cap $${batch.max_cost_usd.toFixed(2)}`)
+        }
+      />
       <SampleDialog
         open={sampling}
         onOpenChange={setSampling}
