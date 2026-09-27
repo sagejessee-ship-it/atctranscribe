@@ -22,12 +22,12 @@ def test_leading_agreement_with_a_garbled_trailing_readback():
         TimedHypothesis("parakeet-a", "parakeet", f"{INSTRUCTION} one two five point three",
                         words(f"{INSTRUCTION} one two five point three")),
         TimedHypothesis("whisper-a", "whisper", f"{INSTRUCTION}. Wanna do my point three?"),
-        TimedHypothesis("qwen-a", "qwen3-asr", f"southwest 456 turn left heading 270 contact departure, uh"),
+        TimedHypothesis("qwen-a", "qwen3-asr", "southwest 456 turn left heading 270 contact departure, uh"),  # noqa: E501
     ]  # fmt: skip
     utterances = utterance_agreement(hyps, duration_ms=6000)
     best = utterances[0]
     assert best["families"] == ["parakeet", "qwen3-asr", "whisper"]
-    assert best["tokens"] == "southwest 456 turn left heading 270 contact departure".split()
+    assert best["tokens"] == ["southwest", "456", "turn", "left", "heading", "270", "contact", "departure"]  # noqa: E501
     assert best["position"] == "leading" and best["bounds_estimated"] is False
     assert best["timed_by"] == ["parakeet-a"]  # the only member with word timings
     assert (best["start_ms"], best["end_ms"]) == (100, 100 + 7 * 300 + 250)
@@ -58,18 +58,18 @@ def test_shorter_run_with_more_families_is_kept():
         TimedHypothesis("q", "qwen3-asr", "jetblue nine is cleared to land"),
     ]
     runs = {tuple(u["tokens"]): u["family_count"] for u in utterance_agreement(hyps)}
-    assert runs[tuple("united nine cleared to land runway one zero".split())] == 2
+    assert runs[tuple(["united", "nine", "cleared", "to", "land", "runway", "one", "zero"])] == 2
     assert runs[("cleared", "to", "land")] == 3
 
 
 def test_estimated_bounds_without_timings_and_number_contract():
     hyps = [
         TimedHypothesis("p", "parakeet", "american 2669 runway 33 left line up and wait"),
-        TimedHypothesis("q", "qwen3-asr", "american two six six nine runway 33 left line up and wait"),
+        TimedHypothesis("q", "qwen3-asr", "american two six six nine runway 33 left line up and wait"),  # noqa: E501
     ]  # fmt: skip
     (u,) = utterance_agreement(hyps, duration_ms=5000)
     # "2669" vs "two six six nine" never agree (evidence contract); the rest does.
-    assert u["tokens"] == "runway 33 left line up and wait".split()
+    assert u["tokens"] == ["runway", "33", "left", "line", "up", "and", "wait"]
     assert u["bounds_estimated"] and u["position"] == "trailing"
     assert 0 < u["start_ms"] < u["end_ms"] == 5000
 

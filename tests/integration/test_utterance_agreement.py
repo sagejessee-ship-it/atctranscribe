@@ -31,12 +31,12 @@ def timed(text: str, step: int = 300):
 # segment -> {model: (text, words or None)}
 CASES = {
     "partial": {  # clean instruction agreed, trailing readback garbled
-        "parakeet-a": (f"{LEAD} one two five point three", timed(f"{LEAD} one two five point three")),
+        "parakeet-a": (f"{LEAD} one two five point three", timed(f"{LEAD} one two five point three")),  # noqa: E501
         "whisper-a": (f"{LEAD}. Wanna do my point three?", None),
         "qwen-a": ("southwest 456 turn left heading 270 contact departure uh", None),
     },
     "whole": {
-        "parakeet-a": ("delta one two three taxi via alpha", timed("delta one two three taxi via alpha")),
+        "parakeet-a": ("delta one two three taxi via alpha", timed("delta one two three taxi via alpha")),  # noqa: E501
         "whisper-a": ("Delta one two three, taxi via alpha.", None),
     },
     "short": {"parakeet-a": ("Thank you.", None), "whisper-a": ("thank you", None)},
