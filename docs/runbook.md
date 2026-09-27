@@ -22,6 +22,7 @@ inline.
 - [10. Moving the control plane to the M1](#10-moving-the-control-plane-to-the-m1)
 - [11. Troubleshooting](#11-troubleshooting)
 - [12. Reference](#12-reference)
+- [13. Review workbench (Phase 5)](#13-review-workbench-phase-5)
 
 ---
 
@@ -195,6 +196,8 @@ uv run pytest tests/unit                  # ~1 s, no database, no GPU, no networ
 AEROCHORUS_TEST_DATABASE_URL=postgresql+psycopg://aerochorus:aerochorus@127.0.0.1:5432/aerochorus_test \
     uv run pytest                         # full suite, ~25 s; needs the Compose Postgres
 uv run ruff check . && uv run ruff format --check .
+cd ui && npm test                          # frontend unit tests (vitest)
+cd ui && npm run build && npx playwright test   # browser E2E against tests/e2e/stack.py (aerochorus_e2e DB)
 ```
 
 The integration suite rebuilds the `aerochorus_test` database from the
@@ -209,6 +212,8 @@ corpora are synthetic collector-format MP3s.
 | Corpus | idempotent scans in every mode; read-only fixtures unchanged; disconnect mid-scan → `source_unavailable`; missing/reappearing files; content changes; unsettled files; DST fold/gap |
 | ATC domain | v1 regression cases ported: symmetric scoring, `16L ≠ 16R`, markup stripping, language drift kept intact, fluent hallucination ≠ consensus, loop/off-domain/low-ATC flags |
 | Evaluation | exact TER/S/D/I arithmetic, abstentions as deletions, entity recall, best-single/oracle, splits; gold never in any worker payload or import graph; gold immutable; source-aware claims; flags on ingest + reflag |
+| Review (Phase 5) | filters/views/sort/paging, trigram search per scope (wildcards escaped), same-family never double-counted, append-only versions + 409 on stale saves, gold needs confirmation (and a DB CHECK), benchmark never trainable, batch silver needs 2-family agreement, deterministic samples, span bounds, airport resolution, agreement backfill |
+| Edge server | audio bytes identical to source, Range/416, not-mounted → 503, changed bytes → 409, API proxy, SPA fallback without path traversal |
 | Sweeps | two-model sweep end to end; one server per model; kill mid-run → resume only missing work; hard kill recovered by the same worker; exactly one result per segment; a changed runtime blocks resume; a failed model does not affect others and can be retried; smoke failure writes nothing; segment errors retried on the next attempt; pause/resume; changed source audio → `source_changed`; artifacts never inside a source |
 
 ---
@@ -679,3 +684,33 @@ WHERE r.run_id = 2 GROUP BY 1
 HAVING count(*) FILTER (WHERE t.status = 'abstained') > 0
    AND count(*) FILTER (WHERE t.status = 'success') > 0;
 ```
+
+---
+
+## 13. Review workbench (Phase 5)
+
+Details: [docs/ui/REVIEW_WORKBENCH.md](ui/REVIEW_WORKBENCH.md).
+
+```bash
+docker compose up -d --build                        # migration 0004: agreement, annotations, airports, pg_trgm
+uv run aerochorus source set-role atco2_fixed benchmark
+uv run aerochorus airport bootstrap KBWI --timezone America/New_York --station BWI
+uv run aerochorus agreement refresh                 # after upgrades, or results posted by an older API
+cd ui && npm ci && npm run build && cd ..           # Node 20.19+ (24 LTS used here)
+uv run aerochorus ui serve                          # → http://127.0.0.1:8080/review
+```
+
+- `ui serve` runs natively where the corpus is mounted (it reuses the worker
+  config's `[sources]`). On the M1 that is the Mac itself.
+- `ui serve --api http://<control-plane>:8000` points it at a remote control
+  plane.
+- Audio problems appear in the inspector with the edge's reason:
+  - 503: not mounted or unavailable;
+  - 404: file missing;
+  - 409: changed since indexing, so run `worker scan --mode verify`.
+- `curl http://127.0.0.1:8080/edge/health` shows source availability and
+  whether the API is reachable.
+- Agreement is refreshed automatically when results are recorded. Run
+  `agreement refresh` after a threshold change
+  (`AEROCHORUS_NEAR_MATCH_THRESHOLD`), an algorithm version bump, or results
+  recorded by a pre-0004 API.

@@ -21,7 +21,7 @@ def test_worker_never_loads_the_database_layer():
     probe = (
         "import sys\n"
         "import aerochorus.cli, aerochorus.worker.daemon, aerochorus.worker.scanner\n"
-        "import aerochorus.worker.health, aerochorus.worker.client\n"
+        "import aerochorus.worker.health, aerochorus.worker.client, aerochorus.edge.server\n"
         "bad = [m for m in sys.modules if m.split('.')[0] in ('sqlalchemy', 'alembic', 'psycopg')"
         " or m.startswith(('aerochorus.db', 'aerochorus.api'))]\n"
         "assert not bad, bad\n"
@@ -33,7 +33,7 @@ def test_worker_never_loads_the_database_layer():
 # The only modules allowed to write files, each to its own configured root:
 # model artifacts, raw CrispASR output (ADR-004), CrispASR server logs, and
 # benchmark clip preparation (writes a new derived corpus; never touches input).
-WRITERS = {"model_store.py", "artifacts.py", "crispasr.py", "atco2.py"}
+WRITERS = {"model_store.py", "artifacts.py", "crispasr.py", "atco2.py", "faa_nasr.py"}
 
 
 def test_source_audio_cannot_be_modified():
@@ -111,6 +111,8 @@ def test_exactly_one_architecture_family_registry():
         for table in Base.metadata.tables.values()
         for column in table.columns
         if "family" in column.name
+        # Derived counts, recomputed from the registry (api/agreement.py), are not registries.
+        and not (table.name == "segment_agreement" and column.name.endswith("_family_count"))
     ]
     assert family_columns == [("model", "architecture_family")]
     fk = next(iter(models.Model.__table__.c.architecture_family.foreign_keys))

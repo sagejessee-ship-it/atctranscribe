@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, aliased
 
 from aerochorus import __version__
+from aerochorus.api.agreement import refresh_agreement
 from aerochorus.atc.quality import FLAGS_VERSION, compute_flags
 from aerochorus.contracts import PresenceStatus
 from aerochorus.db.models import (
@@ -592,6 +593,8 @@ def record_result(
     srm.inference_ms_total += body.inference_ms or 0
     srm.lease_expires_at = utcnow() + timedelta(seconds=body.lease_seconds)
     session.flush()
+    # Keep the review workbench's derived agreement current (ADR-016).
+    refresh_agreement(session, [body.segment_id])
     return ResultAck(
         replaced_error=replaced_error,
         segments_recorded=srm.segments_completed + srm.segments_abstained + srm.segments_error,

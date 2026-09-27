@@ -229,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = source.add_parser("list", help="list sources")
     api_opt(p)
     p.set_defaults(func=cmd_source_list)
+    from aerochorus import cli_review
+
+    cli_review.register_source(source, api_opt)
 
     scan = groups.add_parser("scan", help="scan history").add_subparsers(dest="cmd", required=True)
     p = scan.add_parser("list", help="recent scans")
@@ -243,6 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     from aerochorus import cli_eval
 
     cli_eval.register(groups, api_opt)
+    cli_review.register(groups, api_opt)
 
     worker = groups.add_parser("worker", help="native worker").add_subparsers(
         dest="cmd", required=True

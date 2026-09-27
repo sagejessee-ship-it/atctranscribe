@@ -39,6 +39,7 @@ from aerochorus.contracts import (
     TemporalStatus,
 )
 from aerochorus.db.base import Base
+from aerochorus.review_contracts import ReviewStatus, TextOrigin, TrainingLabel
 from aerochorus.sweep_contracts import ModelRunStatus, ResultStatus, SweepStatus
 
 _EMPTY_OBJECT = text("'{}'::jsonb")
@@ -76,6 +77,9 @@ class CorpusSource(Base):
     read_only: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     adapter_type: Mapped[str] = mapped_column(Text)
     adapter_config: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    # "benchmark" sources (e.g. ATCO2 clips) are evaluation-only: hidden from
+    # review by default and never eligible for training labels or export.
+    role: Mapped[str] = mapped_column(Text, server_default=text("'corpus'"))
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (
@@ -83,6 +87,7 @@ class CorpusSource(Base):
         CheckConstraint("read_only", name="read_only"),
         CheckConstraint("logical_key ~ '^[a-z][a-z0-9_]*$'", name="logical_key_format"),
         CheckConstraint("adapter_type IN ('filesystem')", name="adapter_type"),
+        CheckConstraint("role IN ('corpus', 'benchmark')", name="role"),
     )
 
 
@@ -132,6 +137,7 @@ class Segment(Base):
         UniqueConstraint("source_id", "relative_path"),
         Index("ix_segment_source_dir", "source_id", "relative_dir"),
         Index("ix_segment_capture_start_utc", "capture_start_utc"),
+        Index("ix_segment_source_channel_utc", "source_id", "channel", "capture_start_utc"),
         CheckConstraint(_REL_PATH_RULE.format(col="relative_path"), name="relative_path_format"),
         CheckConstraint(
             "(relative_dir = '' AND strpos(relative_path, '/') = 0)"
@@ -262,8 +268,10 @@ class Model(Base):
     request_params: Mapped[dict[str, str]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
     # word_timestamps, token_confidence, diarization, metal, ...
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
-    # training data, benchmark contamination, licence, ...
+    # training data, benchmark contamination, licence, lineage of fine-tunes...
     pedigree: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    # Re-incorporation gate evidence (ADR-019): smoke, usability, regression.
+    qualification: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
 
     enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     sweep_eligible: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
@@ -421,6 +429,12 @@ class TranscriptionResult(Base):
     __table_args__ = (
         UniqueConstraint("sweep_run_model_id", "segment_id"),
         Index("ix_transcription_result_segment", "segment_id"),
+        Index(
+            "ix_transcription_result_text_trgm",
+            "text",
+            postgresql_using="gin",
+            postgresql_ops={"text": "gin_trgm_ops"},
+        ),
         CheckConstraint(_in("status", ResultStatus), name="status"),
         # An empty transcript is an abstention, never an error; errors carry a type.
         CheckConstraint(
@@ -469,4 +483,214 @@ class GoldSegment(Base):
         CheckConstraint("split IN ('calibration', 'test', 'train', 'dev')", name="split"),
         CheckConstraint("end_ms > start_ms", name="interval"),
         {"schema": "reference"},
+    )
+
+
+# --- review workbench (Phase 5, ADR-016/017) --------------------------------------------
+
+
+class SegmentAgreement(Base):
+    """Derived, versioned agreement over the latest result of each model.
+
+    Recomputed whenever a result arrives (and by ``aerochorus agreement
+    refresh``). Exact groups use normalize_for_evidence; near groups use
+    order-aware LCS similarity on evidence tokens. Provider and family counts
+    are separate; families come only from the model registry.
+    """
+
+    __tablename__ = "segment_agreement"
+
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer)
+    near_threshold: Mapped[float] = mapped_column(Double)
+    results_count: Mapped[int] = mapped_column(Integer)
+    success_count: Mapped[int] = mapped_column(Integer)
+    abstained_count: Mapped[int] = mapped_column(Integer)
+    error_count: Mapped[int] = mapped_column(Integer)
+    models: Mapped[list[str]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+    families: Mapped[list[str]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+    best_exact_provider_count: Mapped[int] = mapped_column(Integer)
+    best_exact_family_count: Mapped[int] = mapped_column(Integer)
+    best_near_family_count: Mapped[int] = mapped_column(Integer)
+    best_near_similarity: Mapped[float | None] = mapped_column(Double)
+    max_pair_similarity: Mapped[float | None] = mapped_column(Double)
+    representative_text: Mapped[str | None] = mapped_column(Text)
+    representative_source: Mapped[str | None] = mapped_column(Text)
+    exact_groups: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+    near_group: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    flags: Mapped[dict[str, int]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_segment_agreement_exact_families", "best_exact_family_count"),
+        Index("ix_segment_agreement_exact_providers", "best_exact_provider_count"),
+        Index("ix_segment_agreement_near_families", "best_near_family_count"),
+        Index("ix_segment_agreement_results", "results_count"),
+        Index(
+            "ix_segment_agreement_representative_trgm",
+            "representative_text",
+            postgresql_using="gin",
+            postgresql_ops={"representative_text": "gin_trgm_ops"},
+        ),
+        Index("ix_segment_agreement_flags", "flags", postgresql_using="gin"),
+    )
+
+
+class AnnotationThread(Base):
+    """One annotated object: the whole segment, or one bounded span of it."""
+
+    __tablename__ = "annotation_thread"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"))
+    scope: Mapped[str] = mapped_column(Text)
+    current_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("annotation_version.id", use_alter=True)
+    )
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('segment', 'span')", name="scope"),
+        Index("ix_annotation_thread_segment", "segment_id"),
+        # At most one whole-segment thread per segment.
+        Index(
+            "uq_annotation_thread_one_segment_scope",
+            "segment_id",
+            unique=True,
+            postgresql_where=text("scope = 'segment'"),
+        ),
+    )
+
+
+class AnnotationVersion(Base):
+    """Append-only annotation history. The thread points at its current version."""
+
+    __tablename__ = "annotation_version"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("annotation_thread.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    start_ms: Mapped[int | None] = mapped_column(Integer)
+    end_ms: Mapped[int | None] = mapped_column(Integer)
+    text: Mapped[str | None] = mapped_column(Text)
+    text_origin: Mapped[str | None] = mapped_column(Text)
+    review_status: Mapped[str] = mapped_column(Text)
+    training_label: Mapped[str] = mapped_column(Text)
+    reason_tags: Mapped[list[str]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+    notes: Mapped[str | None] = mapped_column(Text)
+    annotator: Mapped[str | None] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    basis: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    created_at: Mapped[datetime] = _created_at()
+
+    thread: Mapped[AnnotationThread] = relationship(foreign_keys=[thread_id])
+
+    __table_args__ = (
+        UniqueConstraint("thread_id", "version"),
+        CheckConstraint(_in("review_status", ReviewStatus), name="review_status"),
+        CheckConstraint(_in("training_label", TrainingLabel), name="training_label"),
+        CheckConstraint(
+            "text_origin IS NULL OR " + _in("text_origin", TextOrigin), name="text_origin"
+        ),
+        CheckConstraint("(start_ms IS NULL) = (end_ms IS NULL)", name="span_bounds_paired"),
+        CheckConstraint("end_ms IS NULL OR end_ms > start_ms", name="span_bounds_order"),
+        # Gold is a human assertion with text (ADR-017).
+        CheckConstraint(
+            "training_label <> 'gold' OR (text_origin = 'human' AND coalesce(btrim(text), '') <> ''"
+            " AND review_status IN ('reviewed', 'corrected'))",
+            name="gold_is_human",
+        ),
+        Index(
+            "ix_annotation_version_text_trgm",
+            "text",
+            postgresql_using="gin",
+            postgresql_ops={"text": "gin_trgm_ops"},
+        ),
+    )
+
+
+class ReviewSample(Base):
+    """A reproducible QC sample: filter definition + seed + the chosen ids."""
+
+    __tablename__ = "review_sample"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str | None] = mapped_column(Text)
+    filters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    filter_sha256: Mapped[str] = mapped_column(Text)
+    seed: Mapped[int] = mapped_column(BigInteger)
+    n: Mapped[int] = mapped_column(Integer)
+    total_matching: Mapped[int] = mapped_column(Integer)
+    segment_ids: Mapped[list[int]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created_at()
+
+
+# --- airport context (generic; KBWI bootstrapped from FAA NASR) ---------------------------
+
+
+class Airport(Base):
+    __tablename__ = "airport"
+
+    icao: Mapped[str] = mapped_column(Text, primary_key=True)
+    faa_id: Mapped[str | None] = mapped_column(Text)
+    iata: Mapped[str | None] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    city: Mapped[str | None] = mapped_column(Text)
+    latitude: Mapped[float | None] = mapped_column(Double)
+    longitude: Mapped[float | None] = mapped_column(Double)
+    elevation_ft: Mapped[float | None] = mapped_column(Double)
+    magnetic_variation: Mapped[str | None] = mapped_column(Text)
+    timezone: Mapped[str] = mapped_column(Text)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    updated_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (CheckConstraint("icao ~ '^[A-Z0-9]{4}$'", name="icao_format"),)
+
+
+class AirportRunway(Base):
+    __tablename__ = "airport_runway"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    icao: Mapped[str] = mapped_column(ForeignKey("airport.icao", ondelete="CASCADE"))
+    pair: Mapped[str] = mapped_column(Text)
+    end_ident: Mapped[str] = mapped_column(Text)
+    length_ft: Mapped[int | None] = mapped_column(Integer)
+    width_ft: Mapped[int | None] = mapped_column(Integer)
+    true_alignment: Mapped[float | None] = mapped_column(Double)
+    spoken: Mapped[list[str]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+
+    __table_args__ = (UniqueConstraint("icao", "end_ident"),)
+
+
+class AirportFrequency(Base):
+    __tablename__ = "airport_frequency"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    icao: Mapped[str] = mapped_column(ForeignKey("airport.icao", ondelete="CASCADE"))
+    service: Mapped[str] = mapped_column(Text)
+    frequency_hz: Mapped[int] = mapped_column(BigInteger)
+    facility: Mapped[str | None] = mapped_column(Text)
+    call: Mapped[str | None] = mapped_column(Text)
+    sectorization: Mapped[str | None] = mapped_column(Text)
+    spoken: Mapped[list[str]] = mapped_column(JSONB, server_default=_EMPTY_ARRAY)
+
+    __table_args__ = (Index("ix_airport_frequency_hz", "icao", "frequency_hz"),)
+
+
+class AirportAlias(Base):
+    """Identifiers and spoken names. kind='station' maps collector labels (BWI) to ICAO."""
+
+    __tablename__ = "airport_alias"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    icao: Mapped[str] = mapped_column(ForeignKey("airport.icao", ondelete="CASCADE"))
+    alias: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("icao", "alias", "kind"),
+        CheckConstraint(
+            "kind IN ('icao', 'faa', 'iata', 'station', 'name', 'spoken')", name="kind"
+        ),
+        Index("ix_airport_alias_lookup", "kind", "alias"),
     )

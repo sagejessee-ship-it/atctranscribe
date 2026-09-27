@@ -105,6 +105,20 @@ class ApiClient:
     def get_source(self, key: str) -> SourceRead:
         return SourceRead.model_validate(self._request("GET", f"/api/v1/sources/{key}"))
 
+    def set_source_role(self, key: str, role: str) -> SourceRead:
+        data = self._request("PATCH", f"/api/v1/sources/{key}/role", json={"role": role})
+        return SourceRead.model_validate(data)
+
+    def refresh_agreement(self, limit: int | None = None) -> int:
+        params = {"limit": limit} if limit else None
+        return self._request("POST", "/api/v1/agreement/refresh", params=params)["refreshed"]
+
+    def put_airport(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PUT", f"/api/v1/airports/{profile['icao']}", json=profile)
+
+    def get_airport(self, icao: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/v1/airports/{icao}")
+
     def source_summary(self, key: str) -> SourceSummary:
         data = self._request("GET", f"/api/v1/sources/{key}/summary")
         return SourceSummary.model_validate(data)

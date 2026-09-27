@@ -12,6 +12,12 @@ class ControlPlaneSettings(BaseSettings):
     # A running scan with no batch for this long is marked abandoned when a new
     # scan for the same source starts.
     scan_stale_after_seconds: int = 1800
+    # Order-aware similarity at or above which two hypotheses "near-match"
+    # (review workbench). Similarity, never a probability; recorded per row.
+    near_match_threshold: float = 0.8
+    # Optional OpenSky Trino credentials (Phase 5C); absent means "not configured".
+    opensky_username: str | None = None
+    opensky_password: str | None = None
 
 
 @lru_cache

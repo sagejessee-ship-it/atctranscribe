@@ -10,11 +10,18 @@ from aerochorus.contracts import (
     SegmentStat,
     SourceCreate,
     SourceRead,
+    SourceRoleUpdate,
     SourceSummary,
 )
 from aerochorus.corpus.config import FilesystemAdapterConfig
 from aerochorus.corpus.paths import InvalidRelativePath, normalize_relative_dir
-from aerochorus.db.models import CorpusDirectory, CorpusSource, Segment
+from aerochorus.db.models import (
+    AnnotationThread,
+    AnnotationVersion,
+    CorpusDirectory,
+    CorpusSource,
+    Segment,
+)
 
 router = APIRouter(tags=["corpus"])
 
@@ -26,6 +33,7 @@ def source_read(source: CorpusSource) -> SourceRead:
         read_only=source.read_only,
         adapter_type=source.adapter_type,
         adapter_config=FilesystemAdapterConfig.model_validate(source.adapter_config),
+        role=source.role,
         created_at=source.created_at,
     )
 
@@ -88,6 +96,31 @@ def list_sources(session: SessionDep) -> list[SourceRead]:
 @router.get("/sources/{key}", response_model=SourceRead)
 def get_source(key: str, session: SessionDep) -> SourceRead:
     return source_read(load_source(session, key))
+
+
+@router.patch("/sources/{key}/role", response_model=SourceRead)
+def set_source_role(key: str, body: SourceRoleUpdate, session: SessionDep) -> SourceRead:
+    """Benchmark sources are excluded from review by default and can never be labelled
+    for training; existing training labels block the switch to benchmark."""
+    source = load_source(session, key)
+    if body.role == "benchmark":
+        labelled = session.scalar(
+            select(func.count())
+            .select_from(AnnotationVersion)
+            .join(AnnotationThread, AnnotationThread.current_version_id == AnnotationVersion.id)
+            .join(Segment, Segment.id == AnnotationThread.segment_id)
+            .where(
+                Segment.source_id == source.id,
+                AnnotationVersion.training_label.in_(("candidate", "silver", "gold")),
+            )
+        )
+        if labelled:
+            raise HTTPException(
+                409, f"{labelled} segments of {key} carry training labels; clear them first"
+            )
+    source.role = body.role
+    session.commit()
+    return source_read(source)
 
 
 @router.get("/sources/{key}/directories", response_model=list[DirectoryState])
