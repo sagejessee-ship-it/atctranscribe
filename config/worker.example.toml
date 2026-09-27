@@ -1,0 +1,25 @@
+# AeroChorus worker configuration (machine-local; never committed as worker.toml).
+#
+# Location: $AEROCHORUS_WORKER_CONFIG, or --config, or
+#   macOS/Linux: ~/.config/aerochorus/worker.toml
+#   Windows:     %APPDATA%\aerochorus\worker.toml
+
+worker_name = "m1-air"
+api_url = "http://127.0.0.1:8000"
+
+# Seconds between heartbeats and scheduled scans in `aerochorus worker run`.
+heartbeat_interval_seconds = 30
+incremental_scan_interval_seconds = 900
+full_scan_interval_seconds = 86400
+
+# Concurrent file reads during a scan (I/O bound; keep modest on a NAS).
+read_concurrency = 4
+observation_batch_size = 500
+
+# Logical source -> where it is mounted on THIS machine.
+[sources.home_atc_archive]
+root = "/Volumes/ATC"
+auto_scan = true
+
+# Windows equivalent (use a literal string so backslashes are kept):
+# root = '\\192.168.68.84\bwi'
