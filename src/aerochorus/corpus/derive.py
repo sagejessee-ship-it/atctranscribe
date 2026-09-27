@@ -12,7 +12,7 @@ from typing import Any
 from aerochorus.contracts import FileObservation
 from aerochorus.corpus.config import FilesystemAdapterConfig
 from aerochorus.corpus.naming import parse_filename
-from aerochorus.corpus.paths import basename, parent_dir
+from aerochorus.corpus.paths import parent_dir
 from aerochorus.corpus.temporal import resolve_capture_time
 
 
@@ -23,13 +23,14 @@ def mtime_from_ns(mtime_ns: int) -> datetime:
 
 def derive_segment_fields(obs: FileObservation, config: FilesystemAdapterConfig) -> dict[str, Any]:
     file_mtime = mtime_from_ns(obs.file_mtime_ns)
-    parsed = parse_filename(config.filename_parser, basename(obs.relative_path))
+    parsed = parse_filename(config.filename_parser, obs.relative_path)
     temporal = resolve_capture_time(
         wall_clock_start=parsed.wall_clock_start if parsed else None,
         timezone_name=config.filename_timezone,
         duration_ms=obs.audio.duration_ms,
         file_mtime_utc=file_mtime,
         tolerance_seconds=config.mtime_tolerance_seconds,
+        corroborate=config.mtime_corroboration,
     )
     metadata: dict[str, Any] = {
         "audio": obs.audio.model_dump(exclude_none=True),

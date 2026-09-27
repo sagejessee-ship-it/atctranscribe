@@ -7,9 +7,10 @@ UTC is ``aerochorus.corpus.temporal``'s job.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 
@@ -41,7 +42,7 @@ class ParsedName:
 class FilenameParser(Protocol):
     name: str
 
-    def parse(self, basename: str) -> ParsedName: ...
+    def parse(self, relative_path: str) -> ParsedName: ...
 
 
 class RtlsdrAirbandParser:
@@ -59,8 +60,8 @@ class RtlsdrAirbandParser:
         r"^(?P<label>.+?)_(?P<date>\d{8})_(?P<time>\d{6})(?:_(?P<freq>\d+))?\.[A-Za-z0-9]+$"
     )
 
-    def parse(self, basename: str) -> ParsedName:
-        match = self._PATTERN.match(basename)
+    def parse(self, relative_path: str) -> ParsedName:
+        match = self._PATTERN.match(posixpath.basename(relative_path))
         if match is None:
             return ParsedName(parser=self.name, matched=False, problems=("name_pattern_mismatch",))
 
@@ -85,12 +86,39 @@ class RtlsdrAirbandParser:
         )
 
 
+class Atco2ClipParser:
+    """Clips prepared by ``aerochorus eval atco2 prepare``:
+    ``<recording_id>/<index>_<start_ms>_<end_ms>.wav``. ATCO2 recording ids
+    carry the recording start in UTC; the clip start adds its gold offset."""
+
+    name = "atco2_clip"
+
+    def parse(self, relative_path: str) -> ParsedName:
+        from aerochorus.datasets.atco2 import parse_clip_path
+
+        parsed = parse_clip_path(relative_path)
+        if parsed is None:
+            return ParsedName(parser=self.name, matched=False, problems=("name_pattern_mismatch",))
+        recording, _, start_ms, _ = parsed
+        start = recording.start_utc.replace(tzinfo=None) + timedelta(milliseconds=start_ms)
+        return ParsedName(
+            parser=self.name,
+            matched=True,
+            wall_clock_start=start,
+            label=recording.recording_id,
+            station=recording.station,
+            channel=recording.channel,
+            frequency_hz=recording.frequency_hz,
+        )
+
+
 PARSERS: dict[str, FilenameParser] = {
     RtlsdrAirbandParser.name: RtlsdrAirbandParser(),
+    Atco2ClipParser.name: Atco2ClipParser(),
 }
 
 
-def parse_filename(parser_name: str | None, basename: str) -> ParsedName | None:
+def parse_filename(parser_name: str | None, relative_path: str) -> ParsedName | None:
     if parser_name is None:
         return None
-    return PARSERS[parser_name].parse(basename)
+    return PARSERS[parser_name].parse(relative_path)

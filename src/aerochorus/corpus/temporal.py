@@ -52,6 +52,7 @@ def resolve_capture_time(
     duration_ms: int | None,
     file_mtime_utc: datetime,
     tolerance_seconds: float,
+    corroborate: bool = True,
 ) -> TemporalResolution:
     if wall_clock_start is None:
         return TemporalResolution(
@@ -77,7 +78,7 @@ def resolve_capture_time(
     duration = timedelta(milliseconds=duration_ms) if duration_ms is not None else None
 
     def mtime_delta(start: datetime) -> float | None:
-        if duration is None:
+        if duration is None or not corroborate:
             return None
         return (file_mtime_utc - (start + duration)).total_seconds()
 
@@ -100,7 +101,12 @@ def resolve_capture_time(
         status = TemporalStatus.RESOLVED
     else:
         status = TemporalStatus.UNVERIFIED
-        evidence["reason"] = "duration_unknown" if duration is None else "mtime_disagrees"
+        if not corroborate:
+            evidence["reason"] = "corroboration_not_applicable"
+        elif duration is None:
+            evidence["reason"] = "duration_unknown"
+        else:
+            evidence["reason"] = "mtime_disagrees"
 
     return TemporalResolution(
         status=status,

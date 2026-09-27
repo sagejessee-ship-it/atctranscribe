@@ -5,8 +5,13 @@ radio audio. It runs that audio through a suite of open-source ASR models and
 keeps every hypothesis with full provenance.
 
 The founding plan is in [docs/plan.md](docs/plan.md), and the decisions in
-force are in [docs/adr/](docs/adr/README.md). **Current scope: Phase 0
-(foundation) + Phase 1 (corpus index).** No ASR yet.
+force are in [docs/adr/](docs/adr/README.md). **Status:** Phases 0–4 are done:
+corpus index, the model registry, resumable multi-model sweeps through
+CrispASR, and ATCO2 regression evaluation with isolated gold, all driven from
+the CLI.
+
+**Operating it:** see [docs/runbook.md](docs/runbook.md) for setup, health
+checks, tests, indexing, models, sweeps, qualification and troubleshooting.
 
 ```
 Linux collector ──SMB (read-only)──▶ native worker ──HTTP──▶ API ──▶ PostgreSQL
@@ -16,20 +21,29 @@ Linux collector ──SMB (read-only)──▶ native worker ──HTTP──▶
 - **Control plane** (Docker Compose): PostgreSQL 17 and the FastAPI service.
   It is the only writer to the database.
 - **Worker** (native Python, runs on the Mac): scans the mounted archive
-  read-only and reports observations to the API. CrispASR joins it in
-  Phase 2.
+  read-only and reports observations to the API. It also runs CrispASR with
+  one model at a time: the native Metal binary on the Mac, or the CUDA image
+  on NVIDIA hosts. Results go to the API; raw responses go to a local
+  `.json.zst` artifact store.
 
 ## Layout
 
 ```
 src/aerochorus/
-  contracts.py      wire models + status enums shared by API and worker
+  contracts.py      wire models + status enums shared by API and worker (corpus)
+  sweep_contracts.py  wire models for the model registry, sweeps and results
   corpus/           pure corpus semantics: paths, filename parsing, UTC resolution
+  atc/              ATC domain module: lexicon, the two normalizers, alignment,
+                    entities, background quality flags
+  datasets/         benchmark adapters (ATCO2), the only gold readers
+  eval_contracts.py / eval_client.py  evaluation wire models + client (gold side)
   db/               SQLAlchemy models, Alembic helpers (control plane only)
   migrations/       Alembic migrations (shipped in the package)
   api/              FastAPI app, routes, indexing service
-  worker/           read-only filesystem reader, audio probe, scanner, daemon
-  cli.py            `aerochorus` command
+  worker/           read-only filesystem reader, audio probe, scanner, daemon,
+                    CrispASR launchers, model store, artifact store, sweep worker
+  cli.py            `aerochorus` command (+ cli_transcription.py)
+config/models.toml  pinned model catalog (one model per architecture family)
 docs/               plan, ADRs, corpus fact sheets
 tests/unit          no database needed
 tests/integration   PostgreSQL-backed, end-to-end through the HTTP API
@@ -67,10 +81,14 @@ uv run aerochorus source summary home_atc_archive
 uv run aerochorus worker run                                       # heartbeats + scheduled scans
 ```
 
-Scan modes: `incremental` (default; skips directories unchanged since a settled
-listing), `full` (lists everything, reads only new or changed files), and
-`verify` (re-hashes every file). See
-[ADR-013](docs/adr/0013-segment-lifecycle-and-incremental-scans.md).
+Transcribe a subset (full walkthrough in the runbook):
+
+```bash
+uv run aerochorus models sync && uv run aerochorus worker models pull
+uv run aerochorus sweep create --suite smoke --dir 2026/09/08 --limit 100 --allow-unqualified
+uv run aerochorus worker transcribe
+uv run aerochorus sweep show 1 && uv run aerochorus sweep transcripts 1 --limit 5
+```
 
 ### On the M1 MacBook Air
 
@@ -107,3 +125,7 @@ Interactive docs: `http://127.0.0.1:8000/docs`. Main routes:
 | `GET /api/v1/sources/{key}/segments?dir=` | browse segments |
 | `POST /api/v1/scans`, `…/batches`, `…/finish` | worker scan protocol |
 | `POST /api/v1/workers/heartbeat` | worker health reports |
+| `POST /api/v1/models/sync`, `GET /api/v1/models`, `PUT /api/v1/suites/{name}` | model registry and suites |
+| `POST /api/v1/sweeps`, `GET /api/v1/sweeps/{id}[/report\|/transcripts]` | create, monitor and inspect sweeps |
+| `POST /api/v1/evaluation/references`, `GET /api/v1/evaluation/sweeps/{id}[/segments]` | gold import and scoring (the only routes that return gold) |
+| `POST /api/v1/sweeps/claim`, `/api/v1/sweep-models/{id}/start\|pending\|results\|finish\|release` | worker sweep protocol |

@@ -29,6 +29,7 @@ from aerochorus.worker.client import ApiClient
 def reset_schema(url: str) -> None:
     engine = create_engine(url)
     with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS reference CASCADE"))
         conn.execute(text("DROP SCHEMA public CASCADE"))
         conn.execute(text("CREATE SCHEMA public"))
     engine.dispose()
@@ -48,7 +49,9 @@ def database_url() -> str:
 def app(database_url):
     app = create_app(ControlPlaneSettings(database_url=database_url))
     yield app
-    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+    tables = ", ".join(
+        f"{t.schema}.{t.name}" if t.schema else t.name for t in Base.metadata.sorted_tables
+    )
     with app.state.engine.begin() as conn:
         conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     app.state.engine.dispose()

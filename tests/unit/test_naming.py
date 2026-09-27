@@ -49,5 +49,27 @@ def test_non_matching_name():
     assert parsed.wall_clock_start is None
 
 
+def test_parser_uses_the_basename_of_a_relative_path():
+    parsed = parser.parse("2026/09/08/BWI_GND_20260908_000024_121900000.mp3")
+    assert parsed.channel == "GND"
+
+
+def test_atco2_clip_parser():
+    from aerochorus.corpus.naming import Atco2ClipParser
+
+    parsed = Atco2ClipParser().parse(
+        "LKPR_RUZYNE_Radar_120_520MHz_20201025_091112/02_3790_6850.wav"
+    )
+    assert parsed.matched
+    assert parsed.station == "LKPR" and parsed.channel == "RUZYNE_Radar"
+    assert parsed.frequency_hz == 120_520_000
+    assert parsed.wall_clock_start == datetime(2020, 10, 25, 9, 11, 15, 790000)
+    sion = Atco2ClipParser().parse(
+        "LSGS_SION_Ground_Control_121_7MHz_20210501_073256/01_0_1000.wav"
+    )
+    assert (sion.channel, sion.frequency_hz) == ("SION_Ground_Control", 121_700_000)
+    assert not Atco2ClipParser().parse("BWI_GND_20260908_000024_121900000.mp3").matched
+
+
 def test_no_parser_configured():
     assert parse_filename(None, "BWI_GND_20260908_000024_121900000.mp3") is None

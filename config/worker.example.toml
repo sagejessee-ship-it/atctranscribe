@@ -16,10 +16,36 @@ full_scan_interval_seconds = 86400
 read_concurrency = 4
 observation_batch_size = 500
 
+# `worker run` also processes queued sweeps when [transcription] is present.
+process_sweeps = true
+
 # Logical source -> where it is mounted on THIS machine.
 [sources.home_atc_archive]
 root = "/Volumes/ATC"
 auto_scan = true
-
-# Windows equivalent (use a literal string so backslashes are kept):
+# Windows (literal string keeps the backslashes):
 # root = '\\192.168.68.84\bwi'
+
+[transcription]
+# Verified model artifacts (`aerochorus worker models pull`).
+models_dir = "/Users/me/aerochorus-data/models"
+# Raw CrispASR responses (.json.zst). Must NOT be inside a corpus source.
+artifact_root = "/Users/me/aerochorus-data/artifacts"
+# Logical store name used in artifact:// URIs.
+artifact_store = "m1-air"
+lease_seconds = 600
+pending_batch = 25
+auto_pull_models = false
+
+# --- macOS (M1): native Metal binary from the CrispASR release (ADR-005) ---
+[transcription.crispasr]
+launcher = "native"
+binary = "/Users/me/aerochorus-data/crispasr/crispasr"
+host_port = 8090
+
+# --- Windows/Linux + NVIDIA: the CrispASR CUDA server image instead ---
+# [transcription.crispasr]
+# launcher = "docker"
+# image = "ghcr.io/crispstrobe/crispasr@sha256:<digest>"   # pin; see runbook
+# gpus = "all"
+# host_port = 8090

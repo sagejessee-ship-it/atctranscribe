@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from aerochorus.corpus.paths import normalize_relative_path
 
-FilenameParserName = Literal["rtlsdr_airband"]
+FilenameParserName = Literal["rtlsdr_airband", "atco2_clip"]
 
 
 class FilesystemAdapterConfig(BaseModel):
@@ -30,6 +30,9 @@ class FilesystemAdapterConfig(BaseModel):
     # counts as corroborated. Must stay well below one hour so that it can
     # disambiguate DST fall-back folds.
     mtime_tolerance_seconds: float = Field(default=120.0, gt=0, lt=1800)
+    # False for derived corpora (e.g. prepared benchmark clips): their mtime is
+    # when AeroChorus wrote them, not when the audio was captured.
+    mtime_corroboration: bool = True
     # Files (and directories) modified more recently than this are treated as
     # still being written and are revisited on a later scan.
     min_file_age_seconds: float = Field(default=120.0, ge=0)

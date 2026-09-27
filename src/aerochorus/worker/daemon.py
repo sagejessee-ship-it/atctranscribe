@@ -58,6 +58,12 @@ def run(
 
     with client_factory(config) as client:
         scanner = CorpusScanner(client, config)
+        sweeper = None
+        if config.transcription is not None and config.process_sweeps:
+            from aerochorus.worker.transcriber import SweepWorker
+
+            sweeper = SweepWorker(client, config, stop=stop)
+            log.info("processing queued sweeps with %s", config.transcription.crispasr.launcher)
         while not stop.is_set():
             for key in auto:
                 now = time.monotonic()
@@ -80,4 +86,12 @@ def run(
                 next_incremental[key] = finished + config.incremental_scan_interval_seconds
                 if mode == ScanMode.FULL:
                     next_full[key] = finished + config.full_scan_interval_seconds
+            if sweeper is not None and not stop.is_set():
+                try:
+                    if sweeper.process_next() is not None:
+                        continue  # more work may be queued; re-check scans first
+                except (ApiError, ApiUnreachable) as exc:
+                    log.warning("sweep processing paused: %s", exc)
+                except Exception:
+                    log.exception("sweep processing crashed")
             stop.wait(5.0)

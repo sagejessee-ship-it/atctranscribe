@@ -1,0 +1,181 @@
+# AeroChorus model catalog.
+#
+# `aerochorus models sync` loads this file into the model registry (PostgreSQL
+# is authoritative once synced). A synced model's artifact identity (file,
+# sha256, backend) is immutable: a different artifact needs a new
+# logical_name. Architecture families here are the ONE family registry
+# (ADR-009).
+#
+# Artifacts are pinned to a Hugging Face commit and verified by SHA-256.
+# `capabilities` record what each model returned through CrispASR 0.8.37's
+# server (verbose_json) on real BWI audio, 2026-09-27: per-word timestamps
+# for parakeet/canary/whisper; no model returns token probabilities there.
+# Quantization: q8_0 for small models, q4_k for 2-3B models so the whole
+# roster also fits the 16 GB M1.
+
+[families.parakeet]
+display_name = "NVIDIA Parakeet (FastConformer + TDT transducer)"
+[families.canary]
+display_name = "NVIDIA Canary (FastConformer + Transformer decoder)"
+[families.whisper]
+display_name = "OpenAI Whisper (encoder-decoder transformer)"
+[families.qwen3-asr]
+display_name = "Qwen3-ASR (audio encoder + Qwen3 LLM)"
+[families.granite-speech]
+display_name = "IBM Granite Speech (Conformer + Q-Former + Granite LLM)"
+[families.voxtral]
+display_name = "Mistral Voxtral (Whisper encoder + Mistral LLM)"
+
+[[models]]
+logical_name = "parakeet-tdt-0.6b-v3-q8_0"
+architecture_family = "parakeet"
+crisp_backend = "parakeet"
+upstream_model = "nvidia/parakeet-tdt-0.6b-v3"
+artifact_repo = "cstr/parakeet-tdt-0.6b-v3-GGUF"
+upstream_revision = "dff69b0e675921ffd5a6133f5fbe2aac690d3ec3"
+model_filename = "parakeet-tdt-0.6b-v3-q8_0.gguf"
+model_sha256 = "300de963db10e991a8c3c1674000245546f2e99d396f860aecbde2dd0534e43f"
+artifact_size_bytes = 674342336
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+capabilities = { word_timestamps = true, token_confidence = false }
+pedigree = { license = "CC-BY-4.0" }
+experimental = false
+
+[[models]]
+logical_name = "canary-1b-v2-q8_0"
+architecture_family = "canary"
+crisp_backend = "canary"
+upstream_model = "nvidia/canary-1b-v2"
+artifact_repo = "cstr/canary-1b-v2-GGUF"
+upstream_revision = "f4a12db73daa964aa56a188826682f6b11fdc960"
+model_filename = "canary-1b-v2-q8_0.gguf"
+model_sha256 = "81421a82cdcb23746f6c3e8c2859094f7e8c27dd8ba77d4b8f8440395fbc7c7a"
+artifact_size_bytes = 1049050784
+quantization = "q8_0"
+language = "en"
+# The auto-aligner would silently download an extra model; keep runs hermetic.
+request_params = { language = "en", source_lang = "en", target_lang = "en", no_auto_aligner = "true" }
+capabilities = { word_timestamps = true, token_confidence = false }
+pedigree = { license = "CC-BY-4.0" }
+experimental = false
+
+# Same artifact as canary-1b-v2-q8_0, decoded with beam search. Greedy Canary
+# fell into repetition loops on ~ATCO2 non-native audio (2026-09-27; CrispASR
+# 0.8.37 ignores max_tokens/frequency_penalty for this backend). Same family:
+# never an independent vote alongside the greedy variant (ADR-009).
+[[models]]
+logical_name = "canary-1b-v2-q8_0-beam4"
+architecture_family = "canary"
+crisp_backend = "canary"
+upstream_model = "nvidia/canary-1b-v2"
+artifact_repo = "cstr/canary-1b-v2-GGUF"
+upstream_revision = "f4a12db73daa964aa56a188826682f6b11fdc960"
+model_filename = "canary-1b-v2-q8_0.gguf"
+model_sha256 = "81421a82cdcb23746f6c3e8c2859094f7e8c27dd8ba77d4b8f8440395fbc7c7a"
+artifact_size_bytes = 1049050784
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en", source_lang = "en", target_lang = "en", no_auto_aligner = "true", beam_size = "4" }
+capabilities = { word_timestamps = true, token_confidence = false }
+pedigree = { license = "CC-BY-4.0" }
+experimental = true
+
+[[models]]
+logical_name = "whisper-large-v3-turbo-q8_0"
+architecture_family = "whisper"
+crisp_backend = "whisper"
+upstream_model = "openai/whisper-large-v3-turbo"
+artifact_repo = "ggerganov/whisper.cpp"
+upstream_revision = "5359861c739e955e79d9a303bcbc70fb988958b1"
+model_filename = "ggml-large-v3-turbo-q8_0.bin"
+model_sha256 = "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"
+artifact_size_bytes = 874188075
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+capabilities = { word_timestamps = true, token_confidence = false }
+pedigree = { license = "MIT" }
+experimental = false
+
+[[models]]
+logical_name = "qwen3-asr-0.6b-q8_0"
+architecture_family = "qwen3-asr"
+crisp_backend = "qwen3"
+upstream_model = "Qwen/Qwen3-ASR-0.6B"
+artifact_repo = "cstr/qwen3-asr-0.6b-GGUF"
+upstream_revision = "58bd3202f835f46b24b17142cb503b0860c737a5"
+model_filename = "qwen3-asr-0.6b-q8_0.gguf"
+model_sha256 = "f547589d5ca582e093b2d3312ad9ff13b609b43d413f972c0e92b823dde70a00"
+artifact_size_bytes = 1006809760
+quantization = "q8_0"
+language = "en"
+request_params = { language = "en" }
+capabilities = { word_timestamps = false, token_confidence = false }
+pedigree = { license = "Apache-2.0" }
+experimental = false
+
+[[models]]
+logical_name = "granite-speech-4.1-2b-q4_k"
+architecture_family = "granite-speech"
+crisp_backend = "granite-4.1"
+upstream_model = "ibm-granite/granite-speech-4.1-2b"
+artifact_repo = "cstr/granite-speech-4.1-2b-GGUF"
+upstream_revision = "22387903f310805b3b6fd7fd93fd91a8afab2b98"
+model_filename = "granite-speech-4.1-2b-q4_k.gguf"
+model_sha256 = "d2fd66c801c37eb12b9ae1792994e406ce5a53ff0c864cc8cfe33f91d8eb7920"
+artifact_size_bytes = 2941043168
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+capabilities = { word_timestamps = false, token_confidence = false }
+pedigree = { license = "Apache-2.0" }
+experimental = false
+
+[[models]]
+logical_name = "voxtral-mini-3b-2507-q4_k"
+architecture_family = "voxtral"
+crisp_backend = "voxtral"
+upstream_model = "mistralai/Voxtral-Mini-3B-2507"
+artifact_repo = "cstr/voxtral-mini-3b-2507-GGUF"
+upstream_revision = "cfe490428a44f70fcf6832a4828987ca29427305"
+model_filename = "voxtral-mini-3b-2507-q4_k.gguf"
+model_sha256 = "306088d884e36aa512aa41ea66087b9fd7f3e11e1568ccf6ca5df12dc97595a2"
+artifact_size_bytes = 2652639968
+quantization = "q4_k"
+language = "en"
+request_params = { language = "en" }
+capabilities = { word_timestamps = false, token_confidence = false }
+pedigree = { license = "Apache-2.0" }
+experimental = false
+
+# Suites are ordered rosters. full-lab-v1 is populated only from models that
+# pass qualification (see docs/runbook.md, "Qualify models").
+[suites.smoke]
+description = "One small model: validates the pipeline end to end"
+models = ["parakeet-tdt-0.6b-v3-q8_0"]
+
+[suites.core-diverse]
+description = "Four architecturally different families"
+models = [
+    "parakeet-tdt-0.6b-v3-q8_0",
+    "canary-1b-v2-q8_0",
+    "whisper-large-v3-turbo-q8_0",
+    "qwen3-asr-0.6b-q8_0",
+]
+
+[suites.qualification]
+description = "Every catalogued candidate, for the qualification benchmark"
+models = [
+    "parakeet-tdt-0.6b-v3-q8_0",
+    "canary-1b-v2-q8_0",
+    "whisper-large-v3-turbo-q8_0",
+    "qwen3-asr-0.6b-q8_0",
+    "granite-speech-4.1-2b-q4_k",
+    "voxtral-mini-3b-2507-q4_k",
+]
+
+[suites.canary-variants]
+description = "Decoding variants of canary-1b-v2 (evaluate one at a time; same family)"
+models = ["canary-1b-v2-q8_0-beam4"]

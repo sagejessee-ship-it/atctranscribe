@@ -35,7 +35,10 @@ services:
     environment:
       AEROCHORUS_DATABASE_URL: postgresql+psycopg://aerochorus:aerochorus@postgres:5432/aerochorus
     ports:
-      - "127.0.0.1:${AEROCHORUS_API_PORT:-8000}:8000"
+      # Loopback by default. On the host that serves remote workers (e.g. the
+      # M1 serving the 5080 box), set AEROCHORUS_API_BIND to its LAN address.
+      # There is no authentication: bind only to a trusted network.
+      - "${AEROCHORUS_API_BIND:-127.0.0.1}:${AEROCHORUS_API_PORT:-8000}:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully

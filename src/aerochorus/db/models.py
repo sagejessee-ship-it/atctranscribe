@@ -10,12 +10,14 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
+    Double,
     ForeignKey,
     Identity,
     Index,
@@ -26,6 +28,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from aerochorus.contracts import (
@@ -36,8 +39,10 @@ from aerochorus.contracts import (
     TemporalStatus,
 )
 from aerochorus.db.base import Base
+from aerochorus.sweep_contracts import ModelRunStatus, ResultStatus, SweepStatus
 
 _EMPTY_OBJECT = text("'{}'::jsonb")
+_FALSE = text("false")
 _EMPTY_ARRAY = text("'[]'::jsonb")
 
 # A source-relative path: non-empty, '/'-separated, no absolute prefix, no
@@ -250,6 +255,11 @@ class Model(Base):
     quantization: Mapped[str | None] = mapped_column(Text)
     language: Mapped[str | None] = mapped_column(Text)
 
+    # Where the pinned artifact can be downloaded (verified against model_sha256).
+    artifact_uri: Mapped[str | None] = mapped_column(Text)
+    artifact_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    # CrispASR request fields this model always needs (language, source_lang, ...).
+    request_params: Mapped[dict[str, str]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
     # word_timestamps, token_confidence, diarization, metal, ...
     capabilities: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
     # training data, benchmark contamination, licence, ...
@@ -290,4 +300,173 @@ class ModelSuiteMember(Base):
     __table_args__ = (
         UniqueConstraint("suite_id", "execution_order"),
         CheckConstraint("execution_order >= 0", name="execution_order"),
+    )
+
+
+# --- sweeps and results (ADR-006, ADR-007) -----------------------------------------
+
+
+class SweepRun(Base):
+    """corpus selection x model suite x configuration."""
+
+    __tablename__ = "sweep_run"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str | None] = mapped_column(Text)
+    suite_id: Mapped[int] = mapped_column(ForeignKey("model_suite.id"))
+    status: Mapped[str] = mapped_column(Text)
+    selection_definition: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    effective_config: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    config_sha256: Mapped[str] = mapped_column(Text)
+    segments_total: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _created_at()
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    suite: Mapped[ModelSuite] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(_in("status", SweepStatus), name="status"),
+        CheckConstraint("config_sha256 ~ '^[0-9a-f]{64}$'", name="config_sha256_format"),
+    )
+
+
+class SweepRunSegment(Base):
+    """The run's selection, frozen at creation so 'missing work' is well defined."""
+
+    __tablename__ = "sweep_run_segment"
+
+    run_id: Mapped[int] = mapped_column(ForeignKey("sweep_run.id"), primary_key=True)
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+    __table_args__ = (UniqueConstraint("run_id", "ordinal"),)
+
+
+class SweepRunModel(Base):
+    """One model's execution within one sweep run."""
+
+    __tablename__ = "sweep_run_model"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("sweep_run.id"))
+    model_id: Mapped[int] = mapped_column(ForeignKey("model.id"))
+    execution_order: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    claimed_by: Mapped[int | None] = mapped_column(ForeignKey("worker.id"))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    segments_total: Mapped[int] = mapped_column(Integer)
+    segments_completed: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    segments_abstained: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    segments_error: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    audio_ms_total: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    inference_ms_total: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+
+    # CrispASR build, launcher, device... recorded when the run first starts.
+    runtime: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    runtime_fingerprint: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped[SweepRun] = relationship()
+    model: Mapped[Model] = relationship()
+    worker: Mapped[Worker | None] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "model_id"),
+        UniqueConstraint("run_id", "execution_order"),
+        CheckConstraint(_in("status", ModelRunStatus), name="status"),
+    )
+
+
+class TranscriptionResult(Base):
+    """Exactly one result per (sweep_run_model, segment)."""
+
+    __tablename__ = "transcription_result"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    sweep_run_model_id: Mapped[int] = mapped_column(ForeignKey("sweep_run_model.id"))
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"))
+    status: Mapped[str] = mapped_column(Text)
+    attempt: Mapped[int] = mapped_column(Integer)
+
+    text: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(Text)
+    audio_ms: Mapped[int | None] = mapped_column(Integer)
+    inference_ms: Mapped[int | None] = mapped_column(Integer)
+    has_word_timestamps: Mapped[bool] = mapped_column(Boolean, server_default=_FALSE)
+    has_token_confidence: Mapped[bool] = mapped_column(Boolean, server_default=_FALSE)
+    mean_token_confidence: Mapped[float | None] = mapped_column(Double)
+    word_count: Mapped[int | None] = mapped_column(Integer)
+
+    # Raw CrispASR output, stored once (ADR-004).
+    artifact_uri: Mapped[str | None] = mapped_column(Text)
+    artifact_sha256: Mapped[str | None] = mapped_column(Text)
+    artifact_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    # Hash of the audio bytes actually sent to the model.
+    audio_sha256: Mapped[str | None] = mapped_column(Text)
+
+    error_type: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    # Deterministic quality flags computed on ingest (aerochorus.atc.quality).
+    quality: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    created_at: Mapped[datetime] = _created_at()
+
+    sweep_run_model: Mapped[SweepRunModel] = relationship()
+    segment: Mapped[Segment] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("sweep_run_model_id", "segment_id"),
+        Index("ix_transcription_result_segment", "segment_id"),
+        CheckConstraint(_in("status", ResultStatus), name="status"),
+        # An empty transcript is an abstention, never an error; errors carry a type.
+        CheckConstraint(
+            "(status = 'success' AND text IS NOT NULL AND btrim(text) <> '')"
+            " OR (status = 'abstained' AND coalesce(btrim(text), '') = '')"
+            " OR (status = 'error' AND error_type IS NOT NULL)",
+            name="status_semantics",
+        ),
+        CheckConstraint("artifact_sha256 ~ '^[0-9a-f]{64}$'", name="artifact_sha256_format"),
+        CheckConstraint("audio_sha256 ~ '^[0-9a-f]{64}$'", name="audio_sha256_format"),
+    )
+
+
+# --- evaluation: gold references (ADR-015) ---------------------------------------------
+
+
+class GoldSegment(Base):
+    """Human reference transcript for one benchmark clip.
+
+    Lives in the separate ``reference`` schema. Only the evaluation service
+    reads it; nothing on the transcription path (worker, CrispASR, sweep
+    protocol) can see it. Gold is immutable once imported.
+    """
+
+    __tablename__ = "gold_segment"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("corpus_source.id"))
+    relative_path: Mapped[str] = mapped_column(Text)
+    dataset: Mapped[str] = mapped_column(Text)
+    recording_id: Mapped[str] = mapped_column(Text)
+    source_segment_index: Mapped[int] = mapped_column(Integer)
+    start_ms: Mapped[int] = mapped_column(Integer)
+    end_ms: Mapped[int] = mapped_column(Integer)
+    speaker: Mapped[str | None] = mapped_column(Text)
+    speaker_label: Mapped[str | None] = mapped_column(Text)
+    text_raw: Mapped[str] = mapped_column(Text)
+    tags: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    split: Mapped[str] = mapped_column(Text)
+    split_source: Mapped[str] = mapped_column(Text)
+    non_english: Mapped[bool] = mapped_column(Boolean, server_default=_FALSE)
+    imported_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "relative_path"),
+        CheckConstraint("split IN ('calibration', 'test', 'train', 'dev')", name="split"),
+        CheckConstraint("end_ms > start_ms", name="interval"),
+        {"schema": "reference"},
     )

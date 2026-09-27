@@ -15,7 +15,16 @@ NOW = datetime(2026, 9, 26, tzinfo=UTC)
 def test_models_match_migrations(database_url):
     engine = create_engine(database_url)
     with engine.connect() as conn:
-        context = MigrationContext.configure(conn, opts={"compare_type": True})
+        context = MigrationContext.configure(
+            conn,
+            opts={
+                "compare_type": True,
+                "include_schemas": True,
+                "include_name": lambda name, type_, _: (
+                    name in {None, "public", "reference"} if type_ == "schema" else True
+                ),
+            },
+        )
         diff = compare_metadata(context, Base.metadata)
     engine.dispose()
     assert diff == []
