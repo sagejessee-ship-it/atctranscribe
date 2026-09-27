@@ -247,6 +247,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     cli_eval.register(groups, api_opt)
     cli_review.register(groups, api_opt)
+    from aerochorus import cli_adjudicate
+
+    cli_adjudicate.register(groups, api_opt)
 
     worker = groups.add_parser("worker", help="native worker").add_subparsers(
         dest="cmd", required=True

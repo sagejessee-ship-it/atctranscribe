@@ -114,12 +114,12 @@ phase_config() {
 # host unless remote workers need it (then set AEROCHORUS_API_BIND to the LAN IP).
 AEROCHORUS_DATA=$DATA
 AEROCHORUS_API_BIND=127.0.0.1
-# Optional OpenSky / OpenRouter credentials (server-side only):
+# Optional OpenSky credentials (control plane only; never sent to browsers):
 # AEROCHORUS_OPENSKY_USERNAME=
 # AEROCHORUS_OPENSKY_PASSWORD=
 # AEROCHORUS_OPENSKY_CLIENT_ID=
 # AEROCHORUS_OPENSKY_CLIENT_SECRET=
-# AEROCHORUS_OPENROUTER_API_KEY=
+# (The OpenRouter key belongs in /etc/aerochorus/aerochorus.env, for the adjudicator.)
 EOF
     chmod 600 "$REPO/.env"
   fi
@@ -150,13 +150,16 @@ phase_ui() {
 
 phase_systemd() {
   say "14. systemd: worker, review edge (LAN UI), nightly backup"
-  for unit in aerochorus-worker.service aerochorus-edge.service aerochorus-backup.service aerochorus-backup.timer; do
+  for unit in aerochorus-worker.service aerochorus-edge.service aerochorus-backup.service aerochorus-backup.timer aerochorus-adjudicator.service; do
     sed -e "s|@REPO@|$REPO|g" -e "s|@USER@|$RUN_USER|g" -e "s|@DATA@|$DATA|g" \
         "$HERE/systemd/$unit" | sudo tee "/etc/systemd/system/$unit" >/dev/null
   done
   sudo systemctl daemon-reload
   sudo systemctl enable --now aerochorus-edge.service aerochorus-worker.service aerochorus-backup.timer
   systemctl --no-pager --lines=0 status aerochorus-edge.service aerochorus-worker.service || true
+  # Installed, not enabled: it calls a paid API (for confirmed batches only).
+  say "   adjudicator installed but not enabled; after setting AEROCHORUS_OPENROUTER_API_KEY in"
+  say "   /etc/aerochorus/aerochorus.env: sudo systemctl enable --now aerochorus-adjudicator.service"
 }
 
 phase_smoke() {

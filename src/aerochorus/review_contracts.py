@@ -41,6 +41,8 @@ class TextOrigin(StrEnum):
     HUMAN = "human"
     # Representative text of a model-agreement group (batch nomination).
     MODEL_CONSENSUS = "model_consensus"
+    # Transcript returned by a model adjudication (ADR-022): silver at most, never gold.
+    MODEL_ADJUDICATED = "model_adjudicated"
 
 
 class SourceRole(StrEnum):

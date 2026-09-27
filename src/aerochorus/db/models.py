@@ -31,6 +31,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from aerochorus.adjudication_contracts import BatchStatus as AdjudicationBatchStatus
+from aerochorus.adjudication_contracts import ItemStatus as AdjudicationItemStatus
 from aerochorus.contracts import (
     IntegrityStatus,
     PresenceStatus,
@@ -804,6 +806,72 @@ class TrainingDatasetItem(Base):
 
 
 # --- on-demand context (Phase 5C) ---------------------------------------------------------------
+
+
+class AdjudicationBatch(Base):
+    """A human-confirmed request to adjudicate segments with an external model (ADR-022)."""
+
+    __tablename__ = "adjudication_batch"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    created_at: Mapped[datetime] = _created_at()
+    created_by: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'queued'"))
+    model: Mapped[str] = mapped_column(Text)
+    prompt_version: Mapped[int] = mapped_column(Integer)
+    params: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    selection: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    pricing: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    item_count: Mapped[int] = mapped_column(Integer)
+    estimated_cost_usd: Mapped[float] = mapped_column(Double)
+    max_cost_usd: Mapped[float] = mapped_column(Double)
+    spent_usd: Mapped[float] = mapped_column(Double, server_default=text("0"))
+    note: Mapped[str | None] = mapped_column(Text)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(_in("status", AdjudicationBatchStatus), name="status"),
+        CheckConstraint("max_cost_usd > 0", name="cost_cap"),
+    )
+
+
+class AdjudicationItem(Base):
+    """One segment of a batch: the request context, the raw response, the transcript, the cost."""
+
+    __tablename__ = "adjudication_item"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("adjudication_batch.id", ondelete="CASCADE"))
+    segment_id: Mapped[int] = mapped_column(ForeignKey("segment.id"))
+    status: Mapped[str] = mapped_column(Text, server_default=text("'queued'"))
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    claimed_by: Mapped[str | None] = mapped_column(Text)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    estimated_cost_usd: Mapped[float] = mapped_column(Double)
+    # Worst case for this item (max_tokens reached); reserved against the cap while running.
+    reserve_usd: Mapped[float] = mapped_column(Double)
+    request: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    transcript: Mapped[str | None] = mapped_column(Text)
+    speech_present: Mapped[bool | None] = mapped_column(Boolean)
+    confidence: Mapped[float | None] = mapped_column(Double)
+    best_hypothesis_similarity: Mapped[float | None] = mapped_column(Double)
+    best_hypothesis_model: Mapped[str | None] = mapped_column(Text)
+    representative_similarity: Mapped[float | None] = mapped_column(Double)
+    usage: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=_EMPTY_OBJECT)
+    cost_usd: Mapped[float | None] = mapped_column(Double)
+    error: Mapped[str | None] = mapped_column(Text)
+    accepted_version_id: Mapped[int | None] = mapped_column(ForeignKey("annotation_version.id"))
+    created_at: Mapped[datetime] = _created_at()
+
+    __table_args__ = (
+        UniqueConstraint("batch_id", "segment_id"),
+        CheckConstraint(_in("status", AdjudicationItemStatus), name="status"),
+        Index("ix_adjudication_item_status", "status", "batch_id"),
+        Index("ix_adjudication_item_segment", "segment_id"),
+    )
 
 
 class ContextSnapshot(Base):

@@ -40,8 +40,8 @@ services:
       AEROCHORUS_OPENSKY_CLIENT_ID: ${AEROCHORUS_OPENSKY_CLIENT_ID:-}
       AEROCHORUS_OPENSKY_CLIENT_SECRET: ${AEROCHORUS_OPENSKY_CLIENT_SECRET:-}
       AEROCHORUS_ADSB_PROVIDER: ${AEROCHORUS_ADSB_PROVIDER:-auto}
-      # Gemini adjudication via OpenRouter (optional)
-      AEROCHORUS_OPENROUTER_API_KEY: ${AEROCHORUS_OPENROUTER_API_KEY:-}
+      # Model adjudication (ADR-022): the API plans and prices batches but never holds
+      # the OpenRouter key. The runner (`aerochorus adjudicate run`) on the audio host does.
     ports:
       # Loopback by default. On the host that serves remote workers (e.g. the
       # Linux host serving the 5080 box), set AEROCHORUS_API_BIND to its LAN address.

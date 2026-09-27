@@ -30,6 +30,27 @@ class ControlPlaneSettings(BaseSettings):
     adsb_window_before_s: int = 60
     adsb_window_after_s: int = 60
     adsb_radius_nm: float = 10.0
+    # Model adjudication (ADR-022). The control plane plans, prices and records batches;
+    # it never holds the OpenRouter key (the runner, where the audio lives, does).
+    adjudication_model: str = "~google/gemini-pro-latest"
+    adjudication_max_items: int = 500  # per batch
+    adjudication_max_batch_usd: float = 25.0  # the largest cap a batch may be created with
+    adjudication_max_audio_s: float = 120.0  # longer segments are skipped, never sent
+    # USD per million tokens when OpenRouter's public price list is unreachable.
+    adjudication_price_prompt: float = 2.0
+    adjudication_price_completion: float = 12.0
+    adjudication_price_audio: float = 2.0
+    openrouter_models_url: str = "https://openrouter.ai/api/v1/models"
+
+
+class AdjudicatorSettings(BaseSettings):
+    """The adjudication runner (`aerochorus adjudicate run`) on the host with the audio."""
+
+    model_config = SettingsConfigDict(env_prefix="AEROCHORUS_", env_file=".env", extra="ignore")
+
+    openrouter_api_key: SecretStr | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    adjudication_timeout_s: float = 300.0
 
 
 @lru_cache

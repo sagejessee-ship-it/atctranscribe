@@ -126,6 +126,22 @@ class ApiClient:
     def put_airspaces(self, icao: str, body: dict[str, Any]) -> dict[str, Any]:
         return self._request("PUT", f"/api/v1/airports/{icao}/airspaces", json=body)
 
+    # --- adjudication (ADR-022) ---
+
+    def claim_adjudications(self, runner: str, limit: int = 1) -> list[dict[str, Any]]:
+        return self._request(
+            "POST", "/api/v1/adjudication-items/claim", json={"runner": runner, "limit": limit}
+        )
+
+    def post_adjudication_result(self, item_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"/api/v1/adjudication-items/{item_id}/result", json=body)
+
+    def list_adjudications(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/v1/adjudications")
+
+    def get_adjudication(self, batch_id: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/v1/adjudications/{batch_id}")
+
     def get_airport(self, icao: str) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/airports/{icao}")
 
