@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from corpus_builder import build_bwi_corpus
 from fake_crispasr import FakeLauncher, default_script, fake_catalog, ok
@@ -416,3 +417,77 @@ def test_artifacts_are_compressed_json(api, lab):
     raw = ArtifactStore(lab.artifacts, "test")
     uri = "artifact://test/" + files[0].relative_to(lab.artifacts).as_posix()
     assert json.dumps(raw.read(uri))
+
+
+def crash_script(nth: int):
+    """A backend that aborts (like a GGML assertion) on whichever file is the nth request."""
+    state = {"requests": 0, "poison": None}
+
+    def script(filename, params, server):
+        state["requests"] += 1
+        if state["poison"] is None and state["requests"] == nth:
+            state["poison"] = filename
+        if filename == state["poison"]:
+            server.alive = False
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return default_script(filename, params, server)
+
+    return script, state
+
+
+@pytest.mark.parametrize("nth", [1, 3], ids=["as-the-smoke-test", "mid-run"])
+def test_a_segment_that_crashes_the_backend_costs_only_that_segment(api, db, lab, nth):
+    script, state = crash_script(nth)
+    launcher = FakeLauncher(script=script)
+    sweep = new_sweep(api, relative_dir="2026/09/08")
+    outcomes = sweeper(api, lab, launcher).run_until_idle()
+    assert [o.status for o in outcomes] == ["completed", "completed"]
+    done = api.get_sweep(sweep.id)
+    assert done.status == "completed"
+    assert [m.segments_error for m in done.models] == [1, 1]  # only the poison segment
+    assert result_count(db) == 2 * done.segments_total  # every other segment transcribed
+    assert len(launcher.servers) == 4  # each model: started, crashed once, restarted
+    errors = db.scalars(
+        select(TranscriptionResult.error_type).where(TranscriptionResult.status == "error")
+    ).all()
+    assert errors == ["server_unavailable", "server_unavailable"]
+
+
+def test_a_backend_that_crashes_on_everything_fails_without_results(api, db, lab):
+    def always(filename, params, server):
+        server.alive = False
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    new_sweep(api, relative_dir="2026/09/08")
+    launcher = FakeLauncher(script=always)
+    outcomes = sweeper(api, lab, launcher).run_until_idle(max_model_runs=1)
+    assert outcomes[0].status == "failed" and "smoke" in outcomes[0].message
+    assert result_count(db) == 0  # a broken backend leaves nothing behind
+    assert len(launcher.servers) == 3  # started, restarted twice, then judged broken
+
+
+def test_a_voting_decision_survives_catalog_sync(api, http, lab):
+    decided = http.post(
+        "/api/v1/models/alpha-model/ensemble",
+        json={"eligible": False, "reason": "hallucinates on noise", "by": "tester"},
+    )
+    assert decided.status_code == 200, decided.text
+    body = decided.json()
+    assert body["model"]["ensemble_eligible"] is False
+    assert body["model"]["ensemble_decision"]["previous"] is True
+    # The catalog still says alpha votes; the recorded decision wins, and says so.
+    result = api.sync_models(fake_catalog(lab.models_dir))
+    assert result.ensemble_kept == ["alpha-model"]
+    assert api.get_model("alpha-model").ensemble_eligible is False
+    assert api.get_model("beta-model").ensemble_eligible is True
+    # Voting never changes through the plain update, and never without a reason.
+    assert (
+        http.patch("/api/v1/models/beta-model", json={"ensemble_eligible": False}).status_code
+        == 422
+    )
+    short = http.post("/api/v1/models/beta-model/ensemble", json={"eligible": False, "reason": ""})
+    assert short.status_code == 422
+    same = http.post(
+        "/api/v1/models/alpha-model/ensemble", json={"eligible": False, "reason": "again"}
+    )
+    assert same.status_code == 422

@@ -14,6 +14,7 @@ import posixpath
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,14 @@ log = logging.getLogger(__name__)
 # Give up on a model run after this many consecutive per-segment failures:
 # something is wrong with the server, not with the audio.
 MAX_CONSECUTIVE_ERRORS = 5
+# A single segment can crash a CrispASR backend (e.g. a GGML assertion on odd audio).
+# Such a crash costs that segment an error result and the server a restart; after
+# this many restarts in one model run the backend is treated as unstable.
+MAX_RESTARTS = 3
+# The first request is a smoke test of the server. If it fails, the next segments are
+# tried as the smoke test; after this many the backend is judged broken and the model
+# run fails without recording any results.
+MAX_SMOKE_SEGMENTS = 3
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -66,7 +75,11 @@ def _is_within(child: Path, parent: Path) -> bool:
 
 
 class SmokeFailed(RuntimeError):
-    pass
+    """The server could not answer a smoke-test request (``result`` is that segment's error)."""
+
+    def __init__(self, message: str, result: ResultPost | None = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 class Released(Exception):
@@ -197,6 +210,23 @@ class SweepWorker:
             self._verify_identity(claim, health, server)
             load_s = round(time.monotonic() - started, 1)
             log.info("%s loaded in %ss (%s)", model.logical_name, load_s, health)
+
+            def restart() -> Server:
+                """A fresh server for the same model after a crash (same runtime and settings)."""
+                nonlocal server
+                server.stop()
+                server = self.launcher.start(
+                    model_path,
+                    model.crisp_backend,
+                    claim.request_params.get("language"),
+                    log_path,
+                    overrides=overrides,
+                )
+                self._verify_identity(
+                    claim, server.wait_ready(self.tc.crispasr.startup_timeout_seconds), server
+                )
+                return server
+
             self.client.start_model_run(
                 claim.sweep_model_id,
                 ModelRunStart(
@@ -213,7 +243,7 @@ class SweepWorker:
                     lease_seconds=self.tc.lease_seconds,
                 ),
             )
-            self._serve(claim, server, runtime, outcome)
+            self._serve(claim, server, runtime, outcome, restart)
             self._finish(claim, ModelRunStatus.COMPLETED, None)
             outcome.status = "completed"
         except Released as exc:
@@ -274,11 +304,57 @@ class SweepWorker:
         if loaded and claim.model.model_filename not in loaded:
             raise CrispAsrError(f"server loaded {loaded}, expected {claim.model.model_filename}")
 
+    @staticmethod
+    def _exited(server: Server, error_type: str | None) -> bool:
+        """Did the server die? A dropped connection is given a moment to show a crash."""
+        if not server.is_alive():
+            return True
+        if error_type != "server_unavailable":
+            return False
+        for _ in range(12):
+            time.sleep(0.25)
+            if not server.is_alive():
+                return True
+        return False
+
     def _serve(
-        self, claim: ModelRunClaim, server: Server, runtime: Runtime, outcome: Outcome
+        self,
+        claim: ModelRunClaim,
+        server: Server,
+        runtime: Runtime,
+        outcome: Outcome,
+        restart: Callable[[], Server],
     ) -> None:
         consecutive_errors = 0
+        restarts = 0
         smoke_done = False
+        # Segments that failed as the smoke test: recorded only once another segment
+        # proves the server works (then it was the audio), otherwise the run fails clean.
+        held: list[ResultPost] = []
+        held_ids: set[int] = set()
+
+        def post(result: ResultPost) -> None:
+            self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
+            outcome.processed += 1
+
+        def recover(segment: PendingSegment, result: ResultPost) -> Server:
+            nonlocal restarts, smoke_done
+            restarts += 1
+            if restarts > MAX_RESTARTS:
+                raise CrispAsrError(
+                    f"CrispASR exited {restarts} times in this model run; last on "
+                    f"{segment.relative_path}: {result.error_type}: {result.error_message}"
+                )
+            log.warning(
+                "CrispASR exited on %s (%s); restarting (%s/%s)",
+                segment.relative_path,
+                result.error_message,
+                restarts,
+                MAX_RESTARTS,
+            )
+            smoke_done = False  # the restarted server is smoke-tested again
+            return restart()
+
         while True:
             batch = self.client.pending_segments(claim.sweep_model_id, self.tc.pending_batch)
             if batch.sweep_status != SweepStatus.RUNNING or (
@@ -292,16 +368,39 @@ class SweepWorker:
                 raise Released(f"sweep is {batch.sweep_status}")
             if not batch.segments:
                 return
-            for segment in batch.segments:
+            todo = [s for s in batch.segments if s.segment_id not in held_ids]
+            if not todo:
+                raise SmokeFailed(
+                    f"smoke test: no remaining segment answered ({len(held)} failed); last: "
+                    f"{held[-1].error_type}: {held[-1].error_message}"
+                )
+            for segment in todo:
                 if self.stop.is_set():
                     self.client.release_model_run(
                         claim.sweep_model_id, self.config.worker_name, "worker stopping"
                     )
                     raise Released("worker stopping")
-                result = self._transcribe(claim, server, runtime, segment, smoke=not smoke_done)
-                smoke_done = smoke_done or result.status != ResultStatus.ERROR
-                self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
-                outcome.processed += 1
+                try:
+                    result = self._transcribe(claim, server, runtime, segment, smoke=not smoke_done)
+                except SmokeFailed as exc:
+                    if exc.result is None:
+                        raise
+                    held.append(exc.result)
+                    held_ids.add(segment.segment_id)
+                    if len(held) >= MAX_SMOKE_SEGMENTS:
+                        raise SmokeFailed(
+                            f"smoke test failed on {len(held)} segments in a row; last: {exc}"
+                        ) from exc
+                    log.warning("%s; trying the next segment as the smoke test", exc)
+                    if self._exited(server, exc.result.error_type):
+                        server = recover(segment, exc.result)
+                    continue
+                if not smoke_done and result.status != ResultStatus.ERROR:
+                    smoke_done = True
+                    for earlier in held:  # the server works: those segments made it fail
+                        post(earlier)
+                    held.clear()
+                post(result)
                 if result.status == ResultStatus.ERROR:
                     consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
@@ -309,8 +408,8 @@ class SweepWorker:
                             f"{consecutive_errors} consecutive errors; last: "
                             f"{result.error_type}: {result.error_message}"
                         )
-                    if not server.is_alive():
-                        raise CrispAsrError("CrispASR server exited")
+                    if self._exited(server, result.error_type):
+                        server = recover(segment, result)
                 else:
                     consecutive_errors = 0
 
@@ -328,11 +427,7 @@ class SweepWorker:
         result_id = uuid.uuid4()
 
         def error(kind: str, message: str, *, server_side: bool = True, **extra: Any) -> ResultPost:
-            # The first request that reaches the server is the smoke test: if the
-            # server cannot answer it, the model run fails instead of recording errors.
-            if smoke and server_side:
-                raise SmokeFailed(f"smoke segment {segment.relative_path}: {kind}: {message}")
-            return ResultPost(
+            result = ResultPost(
                 id=result_id,
                 segment_id=segment.segment_id,
                 status=ResultStatus.ERROR,
@@ -341,6 +436,12 @@ class SweepWorker:
                 lease_seconds=self.tc.lease_seconds,
                 **extra,
             )
+            # The first request that reaches the server is the smoke test (see _serve).
+            if smoke and server_side:
+                raise SmokeFailed(
+                    f"smoke segment {segment.relative_path}: {kind}: {message}", result
+                )
+            return result
 
         reader = self.readers.get(segment.source_key)
         if reader is None:

@@ -48,6 +48,13 @@ GTX 1070.
   4. May it vote in agreement? (`ensemble_eligible`, new) Research-only
      models are recorded and shown but never counted.
 
+     The catalog sets the default. Changing it is a deliberate decision in
+     the UI (Transcribe page, "Model voting"), made against evidence from the
+     corpus. The decision records who, when and why, and recomputes agreement
+     for every segment the model transcribed. From then on `models sync`
+     keeps it (`ensemble_kept`). Downloading or running a model never changes
+     it.
+
   The CrispASR backend list (43 ASR backends in 0.8.37) is not a production
   suite.
 - **Qualification harness.** `aerochorus worker qualify` runs each model on

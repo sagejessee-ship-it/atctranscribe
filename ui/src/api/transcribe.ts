@@ -11,6 +11,8 @@ export interface ModelRead {
   sweep_eligible: boolean;
   experimental: boolean;
   ensemble_eligible: boolean;
+  /** A deliberate voting decision made after review (who, when, why). */
+  ensemble_decision?: { eligible: boolean; previous: boolean; reason: string; by: string | null; at: string } | null;
 }
 
 export interface SuiteRead {
@@ -124,6 +126,23 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return (await response.json()) as T;
 }
 
+/** How a model behaves on this corpus: the basis for letting it vote (or not). */
+export interface ModelEvidence {
+  logical_name: string;
+  architecture_family: string;
+  ensemble_eligible: boolean;
+  results: number;
+  spoken: number;
+  abstained: number;
+  errors: number;
+  compared: number;
+  mean_similarity: number | null;
+  near_rate: number | null;
+  exact_rate: number | null;
+  silent_segments: number;
+  speaks_over_silence: number | null;
+}
+
 export const runs = {
   models: () => call<ModelRead[]>("GET", "/api/v1/models"),
   suites: () => call<SuiteRead[]>("GET", "/api/v1/suites"),
@@ -134,4 +153,7 @@ export const runs = {
     call<SweepRead>("POST", `/api/v1/sweeps?allow_unqualified=${allowUnqualified}`, body),
   control: (id: number, action: "pause" | "resume" | "cancel" | "retry") =>
     call<SweepRead>("POST", `/api/v1/sweeps/${id}/${action}`),
+  evidence: () => call<ModelEvidence[]>("GET", "/api/v1/models/evidence"),
+  decideEnsemble: (name: string, body: { eligible: boolean; reason: string; by?: string | null }) =>
+    call<{ model: ModelRead; segments_refreshed: number }>("POST", `/api/v1/models/${encodeURIComponent(name)}/ensemble`, body),
 };

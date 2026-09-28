@@ -137,6 +137,7 @@ def model_read(model: Model) -> ModelRead:
         sweep_eligible=model.sweep_eligible,
         experimental=model.experimental,
         ensemble_eligible=model.ensemble_eligible,
+        ensemble_decision=model.ensemble_decision,
     )
 
 
@@ -149,6 +150,7 @@ def load_model(session: Session, logical_name: str) -> Model:
 
 def sync_catalog(session: Session, body: CatalogSync) -> CatalogSyncResult:
     families_created, models_created, models_unchanged, suites_written = [], [], [], []
+    ensemble_kept: list[str] = []
 
     known_families = set(session.scalars(select(ArchitectureFamily.key)))
     for family in body.families:
@@ -186,9 +188,13 @@ def sync_catalog(session: Session, body: CatalogSync) -> CatalogSyncResult:
             "pedigree",
             "artifact_uri",
             "artifact_size_bytes",
-            "ensemble_eligible",
         ):
             setattr(existing, field, values[field])
+        # Voting is the catalog's default until someone decides otherwise after review.
+        if existing.ensemble_decision is None:
+            existing.ensemble_eligible = values["ensemble_eligible"]
+        elif existing.ensemble_eligible != values["ensemble_eligible"]:
+            ensemble_kept.append(entry.logical_name)
         models_unchanged.append(entry.logical_name)
     session.flush()
 
@@ -203,6 +209,7 @@ def sync_catalog(session: Session, body: CatalogSync) -> CatalogSyncResult:
         models_created=models_created,
         models_unchanged=models_unchanged,
         suites_written=suites_written,
+        ensemble_kept=ensemble_kept,
     )
 
 
@@ -216,6 +223,11 @@ def missing_gates(model: Model) -> list[str]:
 
 def update_model(session: Session, logical_name: str, body: ModelUpdate) -> Model:
     model = load_model(session, logical_name)
+    if body.ensemble_eligible is not None and body.ensemble_eligible != model.ensemble_eligible:
+        raise Invalid(
+            "voting changes go through POST /models/{name}/ensemble (a reason is recorded "
+            "and agreement is recomputed)"
+        )
     if body.sweep_eligible and (missing := missing_gates(model)):
         raise Conflict(
             f"{logical_name} is a converted fine-tune; it becomes sweep-eligible only after "

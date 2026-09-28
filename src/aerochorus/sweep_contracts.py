@@ -199,6 +199,8 @@ class CatalogSyncResult(BaseModel):
     models_created: list[str]
     models_unchanged: list[str]
     suites_written: list[str]
+    # Models whose voting status was decided in the UI and kept over the catalog value.
+    ensemble_kept: list[str] = Field(default_factory=list)
 
 
 class ModelRead(BaseModel):
@@ -223,6 +225,41 @@ class ModelRead(BaseModel):
     sweep_eligible: bool
     experimental: bool
     ensemble_eligible: bool = True
+    ensemble_decision: dict[str, Any] | None = None
+
+
+class EnsembleDecision(BaseModel):
+    """Make a model vote in agreement, or research-only. Deliberate: a reason is required."""
+
+    eligible: bool
+    reason: str = Field(min_length=3, max_length=1000)
+    by: str | None = None
+
+
+class EnsembleDecisionResult(BaseModel):
+    model: ModelRead
+    segments_refreshed: int
+
+
+class ModelEvidence(BaseModel):
+    """How a model behaves on this corpus: the basis for letting it vote (or not)."""
+
+    logical_name: str
+    architecture_family: str
+    ensemble_eligible: bool
+    results: int
+    spoken: int
+    abstained: int
+    errors: int
+    # Against the current voters' consensus (segments where 2+ families agree), excluding
+    # the model's own vote when it is a voter.
+    compared: int
+    mean_similarity: float | None
+    near_rate: float | None  # share with similarity >= the near-match threshold
+    exact_rate: float | None
+    # Voters heard nothing, this model produced words (e.g. "thank you" on noise).
+    silent_segments: int
+    speaks_over_silence: float | None
 
 
 class ModelUpdate(BaseModel):

@@ -249,9 +249,15 @@ Then decide, explicitly:
 aerochorus models set <name> --eligible     # may full sweeps use it
 ```
 
-Ensemble voting and the `full-qualified-linux1070` suite are set in
-`config/models.toml` in the repository. Change them on the PC, ship a new
-bundle, then run `aerochorus models sync`.
+Whether a model **votes** in agreement is decided in the web UI, on the
+Transcribe page under **Model voting**. It shows each model's exact and
+near-match rate against the other families' consensus, and how often it
+produces words where the voters heard nothing. A decision needs a reason,
+recomputes agreement for that model's segments, and is kept by `models sync`.
+
+The `full-qualified-linux1070` suite is set in `config/models.toml` in the
+repository. Change it on the PC, ship a new bundle, then run `aerochorus
+models sync`.
 
 ## 11. Production backlog: only on explicit action
 

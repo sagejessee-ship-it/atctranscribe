@@ -42,3 +42,27 @@ test("select a portion and models, preview, queue a run, pause and cancel it", a
   await run.getByRole("button", { name: "Cancel" }).click();
   await expect(run).toContainText("cancelled");
 });
+
+test("model voting: a deliberate, recorded decision with evidence, reversible", async ({ page }) => {
+  await page.goto("/transcribe");
+  const voting = page.locator("#model-voting-title").locator("../..");
+  const row = voting.getByRole("row").filter({ hasText: "whisper-e2e" });
+  await expect(row).toContainText("voting");
+  await row.getByRole("button", { name: "Make whisper-e2e research-only" }).click();
+  const dialog = page.getByRole("dialog", { name: "Make whisper-e2e research-only" });
+  await expect(dialog).toContainText("vs consensus");
+  const confirm = dialog.getByRole("button", { name: "Make research-only" });
+  await expect(confirm).toBeDisabled(); // a reason is required
+  await dialog.getByLabel("Reason (recorded with the decision)").fill("e2e: says thank you on noise");
+  await confirm.click();
+  await expect(page.locator(".toast")).toContainText("whisper-e2e is now research-only; agreement recomputed");
+  await expect(row).toContainText("research");
+  await expect(row).toContainText("decided");
+
+  // Back to voting, so the rest of the suite sees the original agreement.
+  await row.getByRole("button", { name: "Let whisper-e2e vote" }).click();
+  const back = page.getByRole("dialog", { name: "Let whisper-e2e vote" });
+  await back.getByLabel("Reason (recorded with the decision)").fill("e2e: restore");
+  await back.getByRole("button", { name: "Let it vote" }).click();
+  await expect(row).toContainText("voting");
+});

@@ -1655,3 +1655,13 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- model voting (Transcribe page) ------------------------------------------------------ */
+
+.voting td {
+  vertical-align: middle;
+}
+.voting__note {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}

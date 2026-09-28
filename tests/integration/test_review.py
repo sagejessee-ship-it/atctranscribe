@@ -439,3 +439,30 @@ def test_airport_profile_resolves_stations_and_channels(http, seeded):
     assert detail["airport_profile"]["runways"][0]["end_ident"] == "33L"
     facets = http.get("/api/v1/review/facets").json()
     assert facets["airports"] == ["KBWI"] and "GND" in facets["channels"]
+
+
+def test_voting_decision_recomputes_agreement_with_evidence(http, db, seeded):
+    s1 = seeded["s1_consensus"]
+    agreement = lambda: http.get(f"/api/v1/review/segments/{s1}").json()["agreement"]  # noqa: E731
+    assert agreement()["best_exact_family_count"] == 3
+
+    evidence = {e["logical_name"]: e for e in http.get("/api/v1/models/evidence").json()}
+    whisper = evidence["whisper-a"]
+    assert whisper["results"] == 3 and whisper["spoken"] == 3
+    # s1 is the only segment where 2+ other families agree exactly: whisper matches it.
+    assert (whisper["compared"], whisper["exact_rate"], whisper["near_rate"]) == (1, 1.0, 1.0)
+
+    out = http.post(
+        "/api/v1/models/whisper-a/ensemble",
+        json={"eligible": False, "reason": "says 'thank you' on noise", "by": "tester"},
+    ).json()
+    assert out["model"]["ensemble_decision"]["reason"] == "says 'thank you' on noise"
+    assert out["segments_refreshed"] == 3
+    assert agreement()["best_exact_family_count"] == 2  # whisper no longer votes
+    hyps = http.get(f"/api/v1/review/segments/{s1}").json()["hypotheses"]
+    assert {h["model"]: h["ensemble_eligible"] for h in hyps}["whisper-a"] is False
+
+    back = http.post(
+        "/api/v1/models/whisper-a/ensemble", json={"eligible": True, "reason": "reviewed"}
+    )
+    assert back.status_code == 200 and agreement()["best_exact_family_count"] == 3

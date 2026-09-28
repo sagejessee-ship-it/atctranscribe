@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from aerochorus.api import ensemble as ensemble_svc
 from aerochorus.api import sweeps as svc
 from aerochorus.api.deps import SessionDep
 from aerochorus.db.models import Model, ModelSuite, Segment, SweepRun, Worker
@@ -13,6 +14,9 @@ from aerochorus.sweep_contracts import (
     CatalogSync,
     CatalogSyncResult,
     ClaimRequest,
+    EnsembleDecision,
+    EnsembleDecisionResult,
+    ModelEvidence,
     ModelRead,
     ModelRunClaim,
     ModelRunFinish,
@@ -77,6 +81,20 @@ def sync_models(body: CatalogSync, session: SessionDep) -> CatalogSyncResult:
 def list_models(session: SessionDep) -> list[ModelRead]:
     models = session.scalars(select(Model).order_by(Model.architecture_family, Model.logical_name))
     return [svc.model_read(m) for m in models]
+
+
+@router.get("/models/evidence", response_model=list[ModelEvidence])
+def model_evidence(session: SessionDep) -> list[ModelEvidence]:
+    """Per model: agreement with the other families' consensus, silence hallucinations."""
+    return _call(session, lambda: ensemble_svc.evidence(session), commit=False)
+
+
+@router.post("/models/{name}/ensemble", response_model=EnsembleDecisionResult)
+def decide_ensemble(
+    name: str, body: EnsembleDecision, session: SessionDep
+) -> EnsembleDecisionResult:
+    """Let a model vote in agreement (or make it research-only), with a recorded reason."""
+    return _call(session, lambda: ensemble_svc.decide(session, name, body))
 
 
 @router.get("/models/{name}", response_model=ModelRead)

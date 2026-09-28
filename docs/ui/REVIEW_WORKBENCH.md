@@ -265,7 +265,23 @@ range or all, plus channels and duration bounds, only untranscribed segments,
 optionally a random sample), then choose models (default: every voting
 model). A preview shows segments, audio hours and the estimated time per model
 from observed speed. Runs show progress, ETA, pause/resume/cancel, and the
-worker's status. Nothing starts until you press "Queue run".
+worker's status. Nothing starts until you press "Queue transcription run".
+A worker must be running to process it: `aerochorus worker transcribe`, or
+the `worker` service on the Linux host.
+
+**Model voting** (same page) lists every model that is enabled or has
+results. Each row shows whether it votes in agreement or is research-only,
+plus its evidence from the latest transcripts (up to 3,000 segments):
+
+- exact and near-match rates against the consensus of 2+ other families
+  (never its own vote);
+- how often it speaks where the voters all heard nothing.
+
+"Let vote…" / "Make research…" asks for a reason, records the decision
+(who, when, why) and recomputes agreement for that model's segments.
+Existing silver and gold labels are not changed. A new model stays research
+until someone decides otherwise; look at its transcripts first (search scope
+"Specific model").
 
 ## API
 

@@ -280,6 +280,9 @@ class Model(Base):
     experimental: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     # Votes in ensemble agreement (research-only models are recorded, not counted).
     ensemble_eligible: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    # A deliberate change of ensemble_eligible made after review (UI/API): who, when, why.
+    # While set, `models sync` keeps it instead of the catalog default.
+    ensemble_decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     created_at: Mapped[datetime] = _created_at()
 
     __table_args__ = (

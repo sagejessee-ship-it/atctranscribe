@@ -6,6 +6,7 @@ import { Pause, Play, RotateCw, Square } from "lucide-react";
 import { api } from "../api/client";
 import { runs, type ModelRead, type SweepCreate, type SweepRead, type WorkerRead } from "../api/transcribe";
 import { Badge } from "../components/badges";
+import { ModelVoting } from "./ModelVoting";
 import { Button, ErrorBox, IconButton, Section } from "../components/ui";
 import { fmtCount, fmtUtc } from "../lib/format";
 
@@ -495,6 +496,8 @@ export function TranscribePage() {
       (q.state.data ?? []).some((r) => ["queued", "running"].includes(r.status)) ? 4000 : 15000,
   });
   const workers = useQuery({ queryKey: ["workers"], queryFn: runs.workers, refetchInterval: 15000 });
+  const models = useQuery({ queryKey: ["models"], queryFn: runs.models });
+  const [message, setMessage] = useState("");
   return (
     <div className="page page--wide">
       <h1 className="page__title">Transcribe</h1>
@@ -528,7 +531,11 @@ export function TranscribePage() {
           <Section title="Workers" id="workers">
             {workers.data ? <Workers workers={workers.data} /> : null}
           </Section>
+          {models.data ? <ModelVoting models={models.data} onMessage={setMessage} /> : null}
         </div>
+      </div>
+      <div className="toast" role="status" aria-live="polite">
+        {message}
       </div>
     </div>
   );
