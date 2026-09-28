@@ -1,0 +1,55 @@
+# /srv/aerochorus/config/worker.toml: the worker, review edge and adjudicator
+# containers (ADR-023). Paths are paths inside the containers; compose.yml maps them:
+#   /corpus/home_atc_archive  <- $AEROCHORUS_CORPUS_MOUNT (read-only CIFS mount)
+#   /corpus/local             <- $AEROCHORUS_DATA/corpora (read-only)
+#   /data/models, /data/artifacts, /data/artifacts-jesseepc, /data/exports
+
+worker_name = "linux1070"
+api_url = "http://api:8000"
+# Qualification applies per hardware profile (ADR-021), never per hostname.
+hardware_profile = "linux_pascal_8gb"
+
+heartbeat_interval_seconds = 30
+incremental_scan_interval_seconds = 900
+full_scan_interval_seconds = 86400
+read_concurrency = 4
+observation_batch_size = 500
+# Queued sweeps are processed; none exist until someone queues one (no automatic backlog).
+process_sweeps = true
+
+[sources.home_atc_archive]
+root = "/corpus/home_atc_archive"
+auto_scan = true
+
+# ATCO2 benchmark clips, copied during the migration (evaluation only; never trainable).
+[sources.atco2_fixed]
+root = "/corpus/local/atco2_fixed"
+auto_scan = false
+
+[transcription]
+models_dir = "/data/models"
+artifact_root = "/data/artifacts"
+artifact_store = "linux1070"
+# Raw responses recorded on the Windows dev box, copied during migration (read-only).
+artifact_mounts = { jesseepc = "/data/artifacts-jesseepc" }
+lease_seconds = 900
+pending_batch = 25
+auto_pull_models = false
+
+[transcription.crispasr]
+# The pinned CUDA 12 build inside the worker image (Dockerfile target "worker").
+launcher = "native"
+binary = "/opt/crispasr/crispasr"
+host_port = 8090
+startup_timeout_seconds = 900
+request_timeout_seconds = 600
+
+# Per-model memory/offload on 8 GB VRAM. Escalate only as far as needed, in order:
+# quantized weights -> quantized KV -> partial layer residency -> KV on CPU -> CPU.
+# Every setting here is recorded with each run and in qualification results.
+# [transcription.model_runtime."voxtral-mini-4b-realtime-q4_k"]
+# strategy = "kv-q8"
+# env = { CRISPASR_KV_QUANT = "q8_0" }
+# [transcription.model_runtime."canary-qwen-2.5b-q4_k"]
+# strategy = "offload-24-layers"
+# env = { CRISPASR_N_GPU_LAYERS = "24", CRISPASR_KV_ON_CPU = "1" }

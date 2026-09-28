@@ -1,0 +1,24 @@
+[Unit]
+Description=AeroChorus worker (corpus scans + one-model-at-a-time CrispASR sweeps)
+Documentation=file://@REPO@/docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md
+# The API runs in Docker; the corpus is a network mount.
+Wants=network-online.target docker.service
+After=network-online.target docker.service remote-fs.target
+RequiresMountsFor=/mnt/aerochorus/atc
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+EnvironmentFile=/etc/aerochorus/aerochorus.env
+ExecStart=@REPO@/.venv/bin/aerochorus worker run --config /etc/aerochorus/worker.toml
+# The worker owns CrispASR: stopping the unit stops the model server (no orphaned VRAM).
+KillMode=control-group
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=30
+# A killed model run is released and resumes only its missing work (ADR-014).
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

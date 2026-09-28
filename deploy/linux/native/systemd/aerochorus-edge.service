@@ -1,0 +1,18 @@
+[Unit]
+Description=AeroChorus review edge (LAN web UI, API proxy, read-only source audio)
+Documentation=file://@REPO@/docs/ui/REVIEW_WORKBENCH.md
+Wants=network-online.target docker.service
+After=network-online.target docker.service remote-fs.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+EnvironmentFile=/etc/aerochorus/aerochorus.env
+# No authentication: bind to the trusted LAN only; never port-forward.
+ExecStart=@REPO@/.venv/bin/aerochorus ui serve --config /etc/aerochorus/worker.toml --host ${AEROCHORUS_EDGE_HOST} --port ${AEROCHORUS_EDGE_PORT} --api http://127.0.0.1:8000
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

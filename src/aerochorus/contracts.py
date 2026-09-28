@@ -80,7 +80,13 @@ class SourceRead(BaseModel):
     read_only: bool
     adapter_type: str
     adapter_config: FilesystemAdapterConfig
+    # corpus: reviewable/trainable; benchmark: evaluation only, never training (ADR-017).
+    role: str = "corpus"
     created_at: datetime
+
+
+class SourceRoleUpdate(BaseModel):
+    role: str = Field(pattern="^(corpus|benchmark)$")
 
 
 class DirectoryState(BaseModel):

@@ -1,0 +1,114 @@
+/*
+ * AeroChorus design tokens (docs/ui/DESIGN_SYSTEM.md).
+ * Quiet neutral workstation: slate surfaces, one blue accent, semantic
+ * colours only for state. Components never use raw colours.
+ */
+:root {
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+
+  --row-h: 32px;
+  --control-h: 26px;
+  --nav-h: 36px;
+  --toolbar-h: 40px;
+  --radius: 3px;
+
+  --surface-0: #f6f7f9; /* app background */
+  --surface-1: #ffffff; /* panels */
+  --surface-2: #eef0f3; /* headers, hover */
+  --surface-3: #e2e6eb; /* pressed, selected-muted */
+  --border: #d5dae1;
+  --border-strong: #b7bfca;
+  --text: #1c2430;
+  --text-muted: #5b6676;
+  --text-faint: #8a94a3;
+
+  --accent: #2563c9;
+  --accent-contrast: #ffffff;
+  --focus: #2563c9;
+  --row-selected: #e3edfb;
+  --row-active: #cfe0f8;
+
+  /* Semantic state colours: always paired with text or an icon. */
+  --ok: #1d7a3e;
+  --ok-bg: #e2f3e8;
+  --info: #2563c9;
+  --info-bg: #e3edfb;
+  --warn: #9a5b00;
+  --warn-bg: #fdf0d9;
+  --danger: #b42318;
+  --danger-bg: #fbe4e2;
+  --derived: #6b3fb5;
+  --derived-bg: #eee6fa;
+  --neutral: #5b6676;
+  --neutral-bg: #eceff3;
+
+  --diff-del-bg: #fbe4e2;
+  --diff-ins-bg: #e2f3e8;
+  --shadow-pop: 0 4px 16px rgba(20, 30, 45, 0.16);
+
+  /* airport map: sectional-chart conventions (B/D blue, C magenta), muted */
+  --map-class-b: #2a5fb0;
+  --map-class-c: #9c2f86;
+  --map-class-d: #2a5fb0;
+  --map-runway: #3a4350;
+  --map-ring: #c7ced8;
+  --map-traffic: #1c2430;
+  --map-ground: #8a94a3;
+  --map-highlight: #c2410c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-0: #14181e;
+    --surface-1: #1a1f26;
+    --surface-2: #222831;
+    --surface-3: #2b323d;
+    --border: #2f3743;
+    --border-strong: #46505e;
+    --text: #e3e7ed;
+    --text-muted: #a2acba;
+    --text-faint: #717b89;
+    --accent: #5b93ea;
+    --accent-contrast: #0e1217;
+    --focus: #7aa9f0;
+    --row-selected: #1f3350;
+    --row-active: #264068;
+    --ok: #5cc27f;
+    --ok-bg: #173424;
+    --info: #7aa9f0;
+    --info-bg: #1b2d47;
+    --warn: #e2a64a;
+    --warn-bg: #3a2c12;
+    --danger: #f07a6e;
+    --danger-bg: #3d1d1a;
+    --derived: #b397ee;
+    --derived-bg: #2c2240;
+    --neutral: #a2acba;
+    --neutral-bg: #262c35;
+    --diff-del-bg: #4a1f1b;
+    --diff-ins-bg: #1b3d28;
+    --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --map-class-b: #6f9fe6;
+    --map-class-c: #d47cc2;
+    --map-class-d: #6f9fe6;
+    --map-runway: #c3cbd6;
+    --map-ring: #38414e;
+    --map-traffic: #e3e7ed;
+    --map-ground: #717b89;
+    --map-highlight: #f5a05a;
+  }
+}

@@ -87,6 +87,8 @@ def cmd_source_add(args: argparse.Namespace) -> int:
         config["min_file_age_seconds"] = args.min_file_age
     if args.mtime_tolerance is not None:
         config["mtime_tolerance_seconds"] = args.mtime_tolerance
+    if args.no_mtime_corroboration:
+        config["mtime_corroboration"] = False
     body = SourceCreate(
         logical_key=args.key,
         name=args.name,
@@ -203,12 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = source.add_parser("add", help="register a read-only corpus source")
     p.add_argument("key", help="logical key, e.g. home_atc_archive")
     p.add_argument("--name", required=True)
-    p.add_argument("--parser", choices=["rtlsdr_airband"], help="filename convention")
+    p.add_argument("--parser", choices=["rtlsdr_airband", "atco2_clip"], help="filename convention")
     p.add_argument("--timezone", help="IANA zone of filename timestamps (required with --parser)")
     p.add_argument("--ext", action="append", help="audio extension to include (repeatable)")
     p.add_argument("--sentinel", action="append", help="relative path that must exist")
     p.add_argument("--min-file-age", type=float)
     p.add_argument("--mtime-tolerance", type=float)
+    p.add_argument(
+        "--no-mtime-corroboration",
+        action="store_true",
+        help="for derived corpora whose file mtimes are not capture times",
+    )
     api_opt(p)
     p.set_defaults(func=cmd_source_add)
     for name, func, help_ in (
@@ -222,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = source.add_parser("list", help="list sources")
     api_opt(p)
     p.set_defaults(func=cmd_source_list)
+    from aerochorus import cli_review
+
+    cli_review.register_source(source, api_opt)
 
     scan = groups.add_parser("scan", help="scan history").add_subparsers(dest="cmd", required=True)
     p = scan.add_parser("list", help="recent scans")
@@ -230,9 +240,24 @@ def build_parser() -> argparse.ArgumentParser:
     api_opt(p)
     p.set_defaults(func=cmd_scan_list)
 
+    from aerochorus import cli_transcription
+
+    cli_transcription.register(groups, api_opt)
+    from aerochorus import cli_eval
+
+    cli_eval.register(groups, api_opt)
+    cli_review.register(groups, api_opt)
+    from aerochorus import cli_adjudicate
+
+    cli_adjudicate.register(groups, api_opt)
+
     worker = groups.add_parser("worker", help="native worker").add_subparsers(
         dest="cmd", required=True
     )
+    cli_transcription.register_worker(worker)
+    from aerochorus import cli_deploy
+
+    cli_deploy.register_worker(worker)
     p = worker.add_parser("health", help="report worker health (and send a heartbeat)")
     p.add_argument("--config", type=Path)
     p.set_defaults(func=cmd_worker_health)

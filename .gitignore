@@ -19,3 +19,10 @@ worker.toml
 # OS
 .DS_Store
 Thumbs.db
+
+# Review UI (Phase 5)
+ui/node_modules/
+ui/dist/
+ui/test-results/
+ui/playwright-report/
+ui/*.tsbuildinfo

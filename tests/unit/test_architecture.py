@@ -21,7 +21,8 @@ def test_worker_never_loads_the_database_layer():
     probe = (
         "import sys\n"
         "import aerochorus.cli, aerochorus.worker.daemon, aerochorus.worker.scanner\n"
-        "import aerochorus.worker.health, aerochorus.worker.client\n"
+        "import aerochorus.worker.health, aerochorus.worker.client, aerochorus.edge.server\n"
+        "import aerochorus.worker.dataset_export\n"
         "bad = [m for m in sys.modules if m.split('.')[0] in ('sqlalchemy', 'alembic', 'psycopg')"
         " or m.startswith(('aerochorus.db', 'aerochorus.api'))]\n"
         "assert not bad, bad\n"
@@ -30,8 +31,22 @@ def test_worker_never_loads_the_database_layer():
     assert result.returncode == 0, result.stderr
 
 
+# The only modules allowed to write files, each to its own configured root:
+# model artifacts, raw CrispASR output (ADR-004), CrispASR server logs, and
+# benchmark clip preparation (writes a new derived corpus; never touches input).
+WRITERS = {
+    "model_store.py",
+    "artifacts.py",
+    "crispasr.py",
+    "atco2.py",
+    "faa_nasr.py",
+    "dataset_export.py",
+    "cli_deploy.py",  # writes an operator-requested inventory report (--out)
+}
+
+
 def test_source_audio_cannot_be_modified():
-    """No code path writes, renames, deletes or re-times files (ADR-002)."""
+    """Only designated modules write files, and never the corpus reader (ADR-002)."""
     mutating_os = {
         "remove",
         "unlink",
@@ -64,6 +79,8 @@ def test_source_audio_cannot_be_modified():
     }
     violations = []
     for path, tree in _modules():
+        if path.name in WRITERS:
+            continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "shutil":
                 violations.append(f"{path.name}:{node.lineno} imports from shutil")
@@ -71,7 +88,7 @@ def test_source_audio_cannot_be_modified():
                 isinstance(node, ast.Attribute)
                 and isinstance(node.value, ast.Name)
                 and node.value.id == "shutil"
-                and node.attr != "which"
+                and node.attr not in ("which", "disk_usage")
             ):
                 violations.append(f"{path.name}:{node.lineno} uses shutil.{node.attr}")
             if not isinstance(node, ast.Call):
@@ -93,6 +110,7 @@ def test_source_audio_cannot_be_modified():
                 if not (isinstance(mode, ast.Constant) and set(mode.value) <= {"r", "b"}):
                     violations.append(f"{path.name}:{node.lineno} opens without a read mode")
     assert not violations, violations
+    assert "fs.py" not in WRITERS and "scanner.py" not in WRITERS
 
 
 def test_exactly_one_architecture_family_registry():
@@ -102,6 +120,8 @@ def test_exactly_one_architecture_family_registry():
         for table in Base.metadata.tables.values()
         for column in table.columns
         if "family" in column.name
+        # Derived counts, recomputed from the registry (api/agreement.py), are not registries.
+        and not (table.name == "segment_agreement" and column.name.endswith("_family_count"))
     ]
     assert family_columns == [("model", "architecture_family")]
     fk = next(iter(models.Model.__table__.c.architecture_family.foreign_keys))
@@ -124,15 +144,41 @@ def test_exactly_one_architecture_family_registry():
 
 
 def test_no_jsonl_operational_datastore():
-    """ADR-003: PostgreSQL is authoritative; JSONL is export-only (none exists yet)."""
+    """ADR-003: PostgreSQL is authoritative; JSONL is export-only (dataset export)."""
     offenders = [
         path.relative_to(SRC).as_posix()
         for path in SRC.rglob("*.py")
         if "jsonl" in path.read_text(encoding="utf-8").lower()
     ]
-    assert offenders == []
+    assert offenders == ["worker/dataset_export.py"]
 
 
 def test_source_rows_are_read_only_by_construction():
     checks = {c.name for c in models.CorpusSource.__table__.constraints if c.name}
     assert "ck_corpus_source_read_only" in checks
+
+
+def test_transcription_path_cannot_see_gold():
+    """ADR-015: gold references live below the leakage line."""
+    probe = (
+        "import sys\n"
+        "import aerochorus.worker.transcriber, aerochorus.worker.scanner\n"
+        "import aerochorus.worker.daemon\n"
+        "bad = [m for m in sys.modules if m.startswith(('aerochorus.datasets',"
+        " 'aerochorus.eval_contracts', 'aerochorus.eval_client', 'aerochorus.api'))]\n"
+        "assert not bad, bad\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+    # Only the evaluation service uses the gold model (db/models.py merely defines it).
+    readers = sorted(
+        path.relative_to(SRC).as_posix()
+        for path, tree in _modules()
+        if any(
+            isinstance(node, ast.Name | ast.alias)
+            and (getattr(node, "id", None) or getattr(node, "name", None)) == "GoldSegment"
+            for node in ast.walk(tree)
+        )
+    )
+    assert readers == ["api/evaluation.py"]

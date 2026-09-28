@@ -12,10 +12,30 @@ from collections.abc import Iterator
 
 log = logging.getLogger(__name__)
 
+# Windows SetThreadExecutionState flags.
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+
 
 @contextlib.contextmanager
 def keep_awake(reason: str) -> Iterator[None]:
-    """On macOS, hold a ``caffeinate -i`` assertion for the duration of the block."""
+    """Prevent idle sleep for the duration of the block.
+
+    macOS: a ``caffeinate -i`` assertion. Windows: ``SetThreadExecutionState``
+    on this thread (the display may still turn off). Linux servers do not sleep
+    on their own, so nothing is needed there.
+    """
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        log.debug("preventing idle sleep: %s", reason)
+        try:
+            yield
+        finally:
+            kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+        return
     caffeinate = shutil.which("caffeinate") if sys.platform == "darwin" else None
     if caffeinate is None:
         yield

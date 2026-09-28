@@ -1,0 +1,19 @@
+[Unit]
+Description=AeroChorus adjudication runner (confirmed batches only; OpenRouter)
+Documentation=file://@REPO@/docs/adr/0022-model-adjudication.md
+Wants=network-online.target docker.service
+After=network-online.target docker.service remote-fs.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+EnvironmentFile=/etc/aerochorus/aerochorus.env
+# Works only on batches a human created and confirmed with a cost cap; idles otherwise.
+# Reads source audio read-only (sha256-verified) and sends it to OpenRouter.
+ExecStart=@REPO@/.venv/bin/aerochorus adjudicate run --follow --concurrency 2 --config /etc/aerochorus/worker.toml --api http://127.0.0.1:8000
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
