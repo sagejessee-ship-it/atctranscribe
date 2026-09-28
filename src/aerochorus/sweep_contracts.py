@@ -421,6 +421,7 @@ class PendingSegment(BaseModel):
     relative_path: str
     sha256: str | None
     duration_ms: int | None
+    ordinal: int | None = None  # position in the sweep (the worker's cursor)
 
 
 class PendingBatch(BaseModel):

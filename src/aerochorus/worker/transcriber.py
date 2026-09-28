@@ -355,8 +355,11 @@ class SweepWorker:
             smoke_done = False  # the restarted server is smoke-tested again
             return restart()
 
+        cursor = -1  # the highest sweep ordinal handed to this worker in this claim
         while True:
-            batch = self.client.pending_segments(claim.sweep_model_id, self.tc.pending_batch)
+            batch = self.client.pending_segments(
+                claim.sweep_model_id, self.tc.pending_batch, after_ordinal=cursor
+            )
             if batch.sweep_status != SweepStatus.RUNNING or (
                 batch.model_status != ModelRunStatus.RUNNING
             ):
@@ -367,7 +370,15 @@ class SweepWorker:
                 )
                 raise Released(f"sweep is {batch.sweep_status}")
             if not batch.segments:
+                if held:  # nothing left, and the server never answered a smoke test
+                    raise SmokeFailed(
+                        f"smoke test: no remaining segment answered ({len(held)} failed); "
+                        f"last: {held[-1].error_type}: {held[-1].error_message}"
+                    )
                 return
+            ordinals = [s.ordinal for s in batch.segments if s.ordinal is not None]
+            if ordinals:
+                cursor = max(cursor, *ordinals)
             todo = [s for s in batch.segments if s.segment_id not in held_ids]
             if not todo:
                 raise SmokeFailed(

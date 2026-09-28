@@ -59,7 +59,7 @@ class AdjudicationSelection(BaseModel):
     segment_ids: list[int] = Field(default_factory=list)
     sample_id: int | None = None
     filters: ReviewFilters | None = None
-    n: int | None = Field(default=None, ge=1)  # required with filters
+    n: int | None = Field(default=None, ge=1, le=5000)  # required with filters
     seed: int = 0
 
     @model_validator(mode="after")

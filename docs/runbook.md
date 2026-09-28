@@ -921,7 +921,77 @@ appear in the inspector ("Use as correction" / "Accept as silver") and on
 the **Adjudication** page. Start with 5–10 segments to see quality and
 actual cost.
 
-### 14.8 When it looks right: migrate
+### 14.8 The whole archive, unattended for days
+
+Scale, measured on this PC (wall time per segment, including reading from the
+share and recording):
+
+| model | per segment |
+| --- | --- |
+| parakeet | 0.19 s |
+| whisper-turbo | 0.28 s |
+| qwen3 | 0.44 s |
+| canary-beam4 | 0.50 s |
+| granite | 0.75 s |
+| voxtral | 0.83 s |
+
+The archive has 447,709 segments (559 h of audio), and a third of them
+(147,517) are under 1 second: squelch clicks with 16 h of audio in total.
+**Set Min duration (s) to 2.** That keeps 270k segments with 531 h of audio,
+which is about 0.1–1.1 s per segment per model at their average length:
+
+| model | ≥ 2 s segments | days, cumulative |
+| --- | --- | --- |
+| parakeet | ~17 h | 0.7 |
+| whisper | ~27 h | 1.8 (2-family agreement everywhere) |
+| qwen3 | ~44 h | 3.6 |
+| canary-beam4 | ~44 h | 5.4 |
+| granite | ~77 h | 8.6 |
+| voxtral | ~82 h | 12 |
+
+The Transcribe page queues the selected models **fastest first**, so
+agreement coverage arrives early. Queue all six in one run; after about 5
+days the first four are done and the rest keep going. The sub-second
+segments can be queued later as a separate run with just parakeet and
+whisper.
+
+Before leaving it alone:
+
+1. On the Transcribe page, choose **Everything**, min duration `2`, the 6
+   voting-family models (not `canary-1b-v2-q8_0`), **only segments these
+   models have not transcribed**, and **Allow models not yet qualified**.
+   Then click **Queue transcription run**. Creating it takes a few seconds.
+2. Start the worker in a loop that restarts it if it ever exits and logs to
+   `%USERPROFILE%\aerochorus-data\logs\worker-<date>.log`:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File deploy\windows\run-worker.ps1
+   ```
+
+   Leave that window open. Do not also run `worker transcribe`.
+3. **Windows Update:** Settings → Windows Update → *Pause updates* for 1
+   week, so the PC does not restart itself.
+4. **Docker Desktop** must keep running (it hosts the database, the API and
+   the CrispASR container). Don't quit it or let it update.
+5. Sleep is handled: the worker keeps Windows awake while a model run is
+   active. Don't sign out, and leave the PC on.
+6. Check it now and then from the Transcribe page: progress, ETA, and the
+   worker's heartbeat. Then check the log file.
+
+What recovers by itself:
+
+- **Share outage**: the work is handed back and resumes when the share is
+  readable.
+- **API restart**: the worker waits and continues.
+- **A clip that crashes a model**: that segment is recorded as an error and
+  CrispASR restarts.
+- **A model run that fails outright**: the next model continues. Retry the
+  failed one later from the run's ↻ button.
+
+What does not recover by itself: a Windows restart. After one, start Docker
+Desktop and the script again, and the run continues where it stopped.
+
+### 14.9 When it looks right: migrate
 
 1. Stop the worker and adjudicator (Ctrl-C), and let no run or batch be
    active.

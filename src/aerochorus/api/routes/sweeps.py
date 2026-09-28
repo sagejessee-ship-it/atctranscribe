@@ -255,10 +255,13 @@ def start(sweep_model_id: int, body: ModelRunStart, session: SessionDep) -> dict
 
 @router.get("/sweep-models/{sweep_model_id}/pending", response_model=PendingBatch)
 def get_pending(
-    sweep_model_id: int, session: SessionDep, limit: int = Query(25, ge=1, le=1000)
+    sweep_model_id: int,
+    session: SessionDep,
+    limit: int = Query(25, ge=1, le=1000),
+    after_ordinal: int | None = Query(None, ge=-1),
 ) -> PendingBatch:
     srm = _call(session, lambda: svc.load_model_run(session, sweep_model_id), commit=False)
-    return svc.pending(session, srm, limit)
+    return svc.pending(session, srm, limit, after_ordinal)
 
 
 @router.post("/sweep-models/{sweep_model_id}/results", response_model=ResultAck)

@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router";
 
 import type { ReviewFilters, ReviewQuery, SortKey } from "../api/types";
 
-export const PAGE_SIZES = [50, 100, 200] as const;
+export const PAGE_SIZES = [50, 100, 200, 500, 1000] as const;
 const DEFAULT_SIZE = 100;
 
 export interface ReviewState {

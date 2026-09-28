@@ -491,3 +491,67 @@ def test_a_voting_decision_survives_catalog_sync(api, http, lab):
         "/api/v1/models/alpha-model/ensemble", json={"eligible": False, "reason": "again"}
     )
     assert same.status_code == 422
+
+
+def test_selections_beyond_the_bind_parameter_limit(api, http, db, lab):
+    """A month of archive is 100k+ segments: previews and sweeps must not pass ids as
+    bind parameters (PostgreSQL allows 65,535), and work fetching must use the cursor."""
+    from sqlalchemy import text
+
+    from aerochorus.api.sweeps import canonical_sha256
+    from aerochorus.db.models import SweepRun, SweepRunSegment
+
+    extra = 70_000
+    db.execute(
+        text(
+            """
+            INSERT INTO segment (source_id, relative_path, relative_dir, capture_start_utc,
+                temporal_status, duration_ms, file_size, file_mtime, file_mtime_ns,
+                first_seen_at, last_seen_at)
+            SELECT s.id, 'bulk/' || lpad(g::text, 6, '0') || '.mp3', 'bulk',
+                   timestamptz '2026-10-01 00:00Z' + g * interval '1 second', 'resolved',
+                   3000, 1000, now(), 0, now(), now()
+            FROM corpus_source s, generate_series(1, :n) g
+            WHERE s.logical_key = :key
+            """
+        ),
+        {"n": extra, "key": SOURCE_KEY},
+    )
+    db.commit()
+    body = {"suite": "pair", "selection": {"source_key": SOURCE_KEY}}
+    preview = http.post("/api/v1/sweeps/preview", json=body)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["segments"] == SEGMENTS + extra
+    assert preview.json()["audio_minutes"] >= extra * 3 / 60
+
+    sweep = new_sweep(api)
+    assert sweep.segments_total == SEGMENTS + extra
+    db.expire_all()
+    ordinals = db.scalars(
+        select(SweepRunSegment.ordinal)
+        .where(SweepRunSegment.run_id == sweep.id)
+        .order_by(SweepRunSegment.ordinal)
+    ).all()
+    assert ordinals == list(range(SEGMENTS + extra))  # contiguous, from the database
+    ordered = db.scalars(
+        select(SweepRunSegment.segment_id)
+        .where(SweepRunSegment.run_id == sweep.id)
+        .order_by(SweepRunSegment.ordinal)
+    ).all()
+    run = db.get(SweepRun, sweep.id)
+    assert run.effective_config["segment_ids_sha256"] == canonical_sha256(list(ordered))
+
+    # The worker's cursor: the next batch starts right after it (for a claimed run).
+    srm_id = sweep.models[0].id
+    db.execute(text("UPDATE sweep_run SET status = 'running' WHERE id = :id"), {"id": sweep.id})
+    db.execute(
+        text("UPDATE sweep_run_model SET status = 'running', attempts = 1 WHERE id = :id"),
+        {"id": srm_id},
+    )
+    db.commit()
+    first = http.get(f"/api/v1/sweep-models/{srm_id}/pending", params={"limit": 3}).json()
+    assert [s["ordinal"] for s in first["segments"]] == [0, 1, 2]
+    later = http.get(
+        f"/api/v1/sweep-models/{srm_id}/pending", params={"limit": 2, "after_ordinal": 50_000}
+    ).json()
+    assert [s["ordinal"] for s in later["segments"]] == [50_001, 50_002]

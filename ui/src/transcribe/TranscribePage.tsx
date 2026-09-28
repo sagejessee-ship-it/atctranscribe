@@ -57,7 +57,7 @@ function ModelPicker({
   return (
     <fieldset className="field fieldset" aria-label="Models">
       <legend>
-        Models <span className="muted">({selected.length} selected; one resident at a time)</span>
+        Models <span className="muted">({selected.length} selected; run one at a time, fastest first)</span>
       </legend>
       <div className="transcribe__model-actions">
         <Button size="sm" onClick={() => onChange(enabled.filter((m) => m.ensemble_eligible).map((m) => m.logical_name))}>
@@ -201,8 +201,16 @@ function NewRun() {
     [preview.data],
   );
   const needsUnqualified = preview.data?.needs_unqualified ?? [];
+  // Models run one at a time over the whole selection: fastest first, so every segment
+  // gets 2-family agreement as early as possible (unmeasured models last).
+  const fastestFirst = (names: string[]) =>
+    [...names].sort(
+      (a, b) =>
+        (previewModels.get(a)?.observed_rtf ?? Number.POSITIVE_INFINITY) -
+        (previewModels.get(b)?.observed_rtf ?? Number.POSITIVE_INFINITY),
+    );
   const create = useMutation({
-    mutationFn: () => runs.create(body!, allowUnqualified),
+    mutationFn: () => runs.create({ ...body!, models: fastestFirst(body!.models ?? []) }, allowUnqualified),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["sweeps"] });
       client.invalidateQueries({ queryKey: ["sweep-preview"] });

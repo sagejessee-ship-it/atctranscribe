@@ -332,10 +332,13 @@ class ApiClient:
             json=body.model_dump(mode="json"),
         )
 
-    def pending_segments(self, sweep_model_id: int, limit: int) -> PendingBatch:
-        data = self._request(
-            "GET", f"/api/v1/sweep-models/{sweep_model_id}/pending", params={"limit": limit}
-        )
+    def pending_segments(
+        self, sweep_model_id: int, limit: int, after_ordinal: int | None = None
+    ) -> PendingBatch:
+        params = {"limit": limit}
+        if after_ordinal is not None:
+            params["after_ordinal"] = after_ordinal
+        data = self._request("GET", f"/api/v1/sweep-models/{sweep_model_id}/pending", params=params)
         return PendingBatch.model_validate(data)
 
     def post_result(self, sweep_model_id: int, worker_name: str, body: ResultPost) -> ResultAck:

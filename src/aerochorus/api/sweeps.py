@@ -18,8 +18,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, and_, case, delete, func, or_, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import Integer, and_, case, delete, func, insert, literal, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from aerochorus import __version__
@@ -333,7 +332,22 @@ def _resolve_models(session: Session, body: SweepCreate) -> tuple[ModelSuite, li
     return suite, models
 
 
+# Sweep order: capture time, then path (unique within a source), so it is total.
+def _sweep_order():
+    return (Segment.capture_start_utc.asc().nulls_last(), Segment.relative_path)
+
+
 def _selected_segment_ids(session: Session, selection, models: list[Model]) -> list[int]:
+    """The selected segment ids in sweep order."""
+    chosen = select(Segment.id).where(
+        Segment.id.in_(_selection_query(session, selection, models).scalar_subquery())
+    )
+    return list(session.scalars(chosen.order_by(*_sweep_order())))
+
+
+def _selection_query(session: Session, selection, models: list[Model]):
+    """A query of the selected segment ids. Stays in the database: a month is 100k+ ids,
+    far more than PostgreSQL's 65,535 bind parameters allow in an IN list."""
     source = session.scalar(
         select(CorpusSource).where(CorpusSource.logical_key == selection.source_key)
     )
@@ -366,12 +380,7 @@ def _selected_segment_ids(session: Session, selection, models: list[Model]) -> l
     if selection.limit is not None:
         sample_key = func.md5(func.concat(str(selection.seed), ":", Segment.id))
         query = query.order_by(sample_key).limit(selection.limit)
-    chosen = select(Segment.id).where(Segment.id.in_(query.scalar_subquery()))
-    return list(
-        session.scalars(
-            chosen.order_by(Segment.capture_start_utc.asc().nulls_last(), Segment.relative_path)
-        )
-    )
+    return query
 
 
 def preview_sweep(session: Session, body: SweepCreate) -> SweepPreview:
@@ -385,14 +394,15 @@ def preview_sweep(session: Session, body: SweepCreate) -> SweepPreview:
             raise NotFound(f"unknown models: {', '.join(sorted(missing))}")
     else:
         _, models = _resolve_models(session, body)
-    ids = _selected_segment_ids(session, body.selection, models) if models else []
-    audio_ms = 0
-    if ids:
-        audio_ms = int(
-            session.scalar(
-                select(func.coalesce(func.sum(Segment.duration_ms), 0)).where(Segment.id.in_(ids))
+    segments, audio_ms = 0, 0
+    if models:
+        chosen = _selection_query(session, body.selection, models).scalar_subquery()
+        segments, audio_ms = session.execute(
+            select(func.count(), func.coalesce(func.sum(Segment.duration_ms), 0)).where(
+                Segment.id.in_(chosen)
             )
-        )
+        ).one()
+        audio_ms = int(audio_ms)
     rows = session.execute(
         select(
             SweepRunModel.model_id,
@@ -423,7 +433,7 @@ def preview_sweep(session: Session, body: SweepCreate) -> SweepPreview:
             )
         )
     warnings = []
-    if not ids:
+    if not segments:
         warnings.append("the selection matches no segments")
     if any(not m.enabled for m in models):
         warnings.append("disabled models are skipped")
@@ -436,10 +446,10 @@ def preview_sweep(session: Session, body: SweepCreate) -> SweepPreview:
             "some models share an architecture family: they never count as independent agreement"
         )
     return SweepPreview(
-        segments=len(ids),
+        segments=segments,
         audio_minutes=round(audio_ms / 60000, 1),
         models=out,
-        estimated_minutes=round(total, 1) if ids and len(unknown) < len(models) else None,
+        estimated_minutes=round(total, 1) if segments and len(unknown) < len(models) else None,
         needs_unqualified=[m.logical_name for m in models if m.enabled and not m.sweep_eligible],
         warnings=warnings,
     )
@@ -488,9 +498,15 @@ def create_sweep(session: Session, body: SweepCreate, *, allow_ineligible: bool)
     )
     session.add(run)
     session.flush()
+    # Numbered in the database, in the same order as `ordered` (whose hash is recorded):
+    # one statement even for the whole archive.
+    numbered = select(
+        literal(run.id),
+        Segment.id,
+        (func.row_number().over(order_by=_sweep_order()) - 1).cast(Integer),
+    ).where(Segment.id.in_(_selection_query(session, selection, models).scalar_subquery()))
     session.execute(
-        pg_insert(SweepRunSegment),
-        [{"run_id": run.id, "segment_id": sid, "ordinal": i} for i, sid in enumerate(ordered)],
+        insert(SweepRunSegment).from_select(["run_id", "segment_id", "ordinal"], numbered)
     )
     session.add_all(
         SweepRunModel(
@@ -679,7 +695,14 @@ def start_model_run(
     return srm
 
 
-def pending(session: Session, srm: SweepRunModel, limit: int) -> PendingBatch:
+def pending(
+    session: Session, srm: SweepRunModel, limit: int, after_ordinal: int | None = None
+) -> PendingBatch:
+    """The next segments without a result (or with an error from an earlier attempt).
+
+    ``after_ordinal`` is the worker's cursor within one claim: without it, every call
+    would re-scan all segments already done, which grows with the run.
+    """
     run = srm.run
     batch = PendingBatch(sweep_status=run.status, model_status=srm.status, segments=[])
     if run.status != SweepStatus.RUNNING or srm.status != ModelRunStatus.RUNNING:
@@ -692,6 +715,7 @@ def pending(session: Session, srm: SweepRunModel, limit: int) -> PendingBatch:
             Segment.relative_path,
             Segment.sha256,
             Segment.duration_ms,
+            SweepRunSegment.ordinal,
         )
         .select_from(SweepRunSegment)
         .join(Segment, Segment.id == SweepRunSegment.segment_id)
@@ -702,6 +726,7 @@ def pending(session: Session, srm: SweepRunModel, limit: int) -> PendingBatch:
         )
         .where(
             SweepRunSegment.run_id == run.id,
+            SweepRunSegment.ordinal > (-1 if after_ordinal is None else after_ordinal),
             or_(
                 result.id.is_(None),
                 and_(result.status == ResultStatus.ERROR, result.attempt < srm.attempts),
@@ -712,7 +737,12 @@ def pending(session: Session, srm: SweepRunModel, limit: int) -> PendingBatch:
     )
     batch.segments = [
         PendingSegment(
-            segment_id=r[0], source_key=r[1], relative_path=r[2], sha256=r[3], duration_ms=r[4]
+            segment_id=r[0],
+            source_key=r[1],
+            relative_path=r[2],
+            sha256=r[3],
+            duration_ms=r[4],
+            ordinal=r[5],
         )
         for r in rows
     ]
