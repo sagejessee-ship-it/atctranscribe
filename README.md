@@ -20,27 +20,28 @@ force are in [docs/adr/](docs/adr/README.md). **Status:** Phases 0–5 are done:
 - paid model adjudication (Gemini via OpenRouter) of selected segments,
   priced, capped and confirmed (ADR-022).
 
-**Deployment:** a Linux host with a GTX 1070 (ADR-021). See
-[docs/deployment/](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
+**Deployment:** a Linux host with a GTX 1070, containers only (ADR-021,
+ADR-023). See [docs/deployment/](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
 **Operating it:** [docs/runbook.md](docs/runbook.md).
 
 ```
 ALIENWARE COLLECTOR ──SMB, read-only──▶ LINUX HOST (GTX 1070 8 GB, 32 GB RAM) ◀──HTTP── LAN browsers
  SDR capture, segmentation             PostgreSQL + API (Docker)                        (Intel Mac, PCs)
- immutable source audio                review edge: web UI + audio (systemd)
-                                       worker + pinned CUDA 12 CrispASR (systemd)
+ immutable source audio                review edge: web UI + audio (container)
+                                       worker + pinned CUDA 12 CrispASR (container, GPU)
                                        models, artifacts, exports, backups (/srv/aerochorus)
 ```
 
 - **Control plane** (Docker Compose): PostgreSQL 17 and the FastAPI service.
   It is the only writer to the database.
-- **Worker** (native Python, systemd): scans the mounted archive read-only
+- **Worker** (a container on the Linux host with the GPU passed through;
+  native Python on the Windows dev box): scans the mounted archive read-only
   and reports observations to the API. It also runs CrispASR with one model
   at a time: the pinned CUDA 12 binary on the Linux host, or the CUDA image
   on the Windows 5080 box. Results go to the API; raw responses go to a local
   `.json.zst` artifact store.
-- **Review edge** (native, systemd): serves the web UI on the LAN, proxies
-  the API, and streams source audio read-only.
+- **Review edge** (a container on the Linux host): serves the web UI on the
+  LAN, proxies the API, and streams source audio read-only.
 
 ## Layout
 
@@ -108,12 +109,17 @@ uv run aerochorus sweep show 1 && uv run aerochorus sweep transcripts 1 --limit 
 
 ### On the Linux host
 
-Mount the collector's share read-only at `/mnt/aerochorus/atc` (see
-[deploy/linux/fstab.example](deploy/linux/fstab.example)), then run
-`deploy/linux/setup.sh`. It inventories the hardware, installs the pinned
-CUDA 12 CrispASR, and starts the services. It then smoke-tests one CUDA
-backend and one CPU backend on real segments, and prints the LAN URL. The
-full walkthrough is
+Containers only: no repository, Python or Node on the host. On the Windows
+PC, `deploy\linux\package.ps1` builds the images and writes a deploy bundle.
+Copy it to the host, then run `sudo bash host-setup.sh` once, followed by
+`bash deploy.sh up`:
+
+- `host-setup.sh` checks the driver, installs Docker and the NVIDIA
+  Container Toolkit, and mounts the share read-only;
+- `deploy.sh up` loads the images, writes the config, starts everything, and
+  smoke-tests the API, UI, share, GPU and CrispASR.
+
+The full walkthrough is
 [docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
 
 ## Tests

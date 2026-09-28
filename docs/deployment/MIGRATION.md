@@ -38,23 +38,31 @@ saving annotations. Otherwise newer rows are left behind.
 scp -r "$env:USERPROFILE\aerochorus-data\migration\<stamp>" <user>@<linux-host>:/srv/aerochorus/backups/migration-<stamp>
 ```
 
-## 3. Import (Linux), before `setup.sh --phase services`
+## 3. Import (Linux), after `host-setup.sh` and `deploy.sh up`
+
+The containers must be deployed first
+([LINUX_DEPLOYMENT_RUNBOOK.md](LINUX_DEPLOYMENT_RUNBOOK.md) §3–4). A fresh
+deployment has an empty database.
 
 ```bash
-deploy/migrate/import-linux.sh /srv/aerochorus/backups/migration-<stamp>
+/srv/aerochorus/deploy/import.sh /srv/aerochorus/backups/migration-<stamp>
 ```
 
 The import:
 
 1. verifies the checksums;
-2. starts Postgres only, and refuses a database that already has segments;
-3. runs `pg_restore`;
-4. **compares every count and fingerprint** with the export;
-5. starts the API, which applies any newer migrations;
-6. unpacks the artifacts (read-only) and the ATCO2 clips.
+2. stops everything but PostgreSQL, and refuses a database that already has
+   segments;
+3. recreates an empty database, so the dump's schema version is restored
+   exactly;
+4. runs `pg_restore`;
+5. **compares every count and fingerprint** with the export (a UTF-8 BOM or
+   CRLF from Windows PowerShell is tolerated);
+6. starts everything again; migrations bring the schema to head;
+7. unpacks the artifacts (read-only) and the ATCO2 clips.
 
-Then run `setup.sh` normally. The `services` phase is idempotent and does
-not re-register an existing source.
+Then pull models (`aerochorus worker models pull --suite smoke-linux1070`)
+and qualify (runbook §10).
 
 ## 4. After
 

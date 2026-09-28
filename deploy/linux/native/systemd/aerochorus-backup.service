@@ -8,4 +8,4 @@ Type=oneshot
 User=@USER@
 WorkingDirectory=@REPO@
 EnvironmentFile=/etc/aerochorus/aerochorus.env
-ExecStart=/usr/bin/env bash @REPO@/deploy/linux/backup.sh
+ExecStart=/usr/bin/env bash @REPO@/deploy/linux/native/backup.sh

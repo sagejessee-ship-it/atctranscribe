@@ -151,3 +151,35 @@ def test_trails_are_ordered_thinned_and_relative_to_the_segment():
     assert len(path) == 10 and path[0][0] == -100 and path[-1][0] == 48
     assert [p[0] for p in path] == sorted(p[0] for p in path)
     assert path[0][3] == round(300 * 3.28084)
+
+
+def test_rest_drops_aircraft_that_were_never_inside_the_area():
+    from aerochorus.context.opensky import _track_rows
+
+    q = build_query(datetime.fromtimestamp(T, UTC), *KBWI, radius_nm=10)
+    flight = {"icao24": "far001", "callsign": "EJA888"}
+    far = {"icao24": "far001", "path": [[T - 900, 42.0, -72.0, 4500.0, 130.0, False],
+                                        [T + 900, 41.0, -73.0, 4000.0, 130.0, False]]}  # fmt: skip
+    assert _track_rows(far, flight, q) == []
+    # Interpolating across a two-hour gap is guesswork, even if it lands in the box.
+    gap = {"icao24": "gap001", "path": [[T - 3600, 39.20, -76.70, 900.0, 90.0, False],
+                                        [T + 3600, 39.15, -76.60, 900.0, 90.0, False]]}  # fmt: skip
+    assert _track_rows(gap, flight, q) == []
+    near = {"icao24": "near01", "path": [[T - 60, 39.30, -76.70, 1500.0, 170.0, False],
+                                         [T + 60, 39.24, -76.69, 900.0, 170.0, False]]}  # fmt: skip
+    assert [r[0] for r in _track_rows(near, flight, q)][-1] == T
+
+
+def test_rest_caches_day_flight_lists_and_tracks_to_save_credits():
+    calls: list[httpx.Request] = []
+    provider = OpenSkyRest("client-x", "s", http=httpx.Client(transport=rest_transport(calls)))
+    first = provider.fetch(build_query(datetime.fromtimestamp(T, UTC), *KBWI))
+    flight_calls = [c for c in calls if "/flights/" in c.url.path]
+    assert len(flight_calls) == 2  # one arrivals + one departures list for the whole UTC day
+    begin = int(flight_calls[0].url.params["begin"])
+    assert begin % 86400 == 0 and int(flight_calls[0].url.params["end"]) == begin + 86399
+    assert first.metadata["requests"] == 3 and first.metadata["cache_hits"] == 0
+    # The next segment a few minutes later costs nothing: same day, same flight.
+    later = provider.fetch(build_query(datetime.fromtimestamp(T + 120, UTC), *KBWI))
+    assert later.metadata["requests"] == 0 and later.metadata["cache_hits"] == 3
+    assert summarize(later, build_query(datetime.fromtimestamp(T + 120, UTC), *KBWI))

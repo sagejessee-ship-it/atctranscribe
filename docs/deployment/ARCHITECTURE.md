@@ -1,4 +1,4 @@
-# Deployment architecture (ADR-021)
+# Deployment architecture (ADR-021, ADR-023)
 
 ```text
 ALIENWARE COLLECTOR (unchanged, independent)
@@ -8,22 +8,27 @@ share: //192.168.68.84/bwi
         │
         │  LAN, SMB/CIFS, mounted READ-ONLY at /mnt/aerochorus/atc
         ▼
-LINUX AEROCHORUS HOST: GTX 1070 8 GB (Pascal, CC 6.1), 32 GB RAM
-──────────────────────────────────────────────────────────────────
-Docker Compose (restart: unless-stopped)
-  postgres:17        127.0.0.1:5432 only   data → /srv/aerochorus/postgres
-  migrate            one-shot alembic upgrade
-  api (FastAPI)      127.0.0.1:8000        (LAN only if remote workers need it)
+LINUX AEROCHORUS HOST: GTX 1070 8 GB (Pascal, CC 6.1), 32 GB RAM, containers only
+──────────────────────────────────────────────────────────────────────────────────
+host: NVIDIA driver (>= 570, <= 580 branch), Docker + NVIDIA Container Toolkit,
+      read-only CIFS mount, /srv/aerochorus. No repository, Python or Node.
+Docker Compose project "aerochorus" (deploy/linux/compose.yml, restart: unless-stopped)
+  postgres:17         127.0.0.1:5432 only   data → /srv/aerochorus/postgres
+  migrate             aerochorus-app, one-shot alembic upgrade
+  api (FastAPI)       aerochorus-app, 127.0.0.1:8000   (LAN only if remote workers need it)
+  edge                aerochorus-app, 0.0.0.0:8080  web UI + /api proxy + read-only /audio
+  worker              aerochorus-worker, GPU (NVIDIA Container Toolkit): heartbeats,
+                      scans, queued sweeps
+      └─ launches the pinned CrispASR CUDA 12 binary (in the image, sha256 recorded),
+         ONE model resident at a time
+  backup              postgres:17, nightly pg_dump + counts + config
+  adjudicator         aerochorus-app, optional profile (ADR-022), OpenRouter key
+  cli                 aerochorus-worker, one-off commands (`aerochorus …` wrapper)
 
-systemd (native, User=<operator>)
-  aerochorus-edge    0.0.0.0:8080  web UI + /api proxy + read-only /audio (sha256-checked)
-  aerochorus-worker  heartbeats, scans, queued sweeps
-      └─ launches the pinned CrispASR CUDA 12 binary, ONE model resident at a time
-         /srv/aerochorus/crispasr/current → 0.8.37 (sha256 recorded)
-  aerochorus-backup.timer   nightly pg_dump + critical files
-
-/srv/aerochorus/  postgres/ models/ artifacts/ artifacts-jesseepc/ exports/
-                  cache/ context/ corpora/atco2_fixed/ logs/ backups/ crispasr/ cuda12/
+/srv/aerochorus/  config/ (aerochorus.env, worker.toml)   deploy/ (kit of the running tag)
+                  postgres/ models/ artifacts/ artifacts-jesseepc/ exports/
+                  corpora/atco2_fixed/ cache/ logs/ backups/
+images: built on the Windows PC (deploy/linux/package.ps1), shipped as a bundle
         │
         ▼  HTTP :8080 (trusted LAN, no auth, never port-forwarded)
 LAN BROWSERS: Intel Mac, desktop PCs, other devices
@@ -42,7 +47,8 @@ OPTIONAL EXTRA WORKER: Windows RTX 5080 box
 | raw CrispASR responses | `/srv/aerochorus/artifacts` (`artifact://linux1070/…`), `artifacts-jesseepc` (historical) | expensive but re-creatable |
 | model files | `/srv/aerochorus/models` (pinned sha256) | re-creatable |
 | dataset exports (clips + manifest) | `/srv/aerochorus/exports` | re-creatable from the DB + audio, still backed up |
-| CrispASR binary + CUDA 12 runtime | `/srv/aerochorus/crispasr`, `/srv/aerochorus/cuda12` | re-creatable (`crispasr.lock`) |
+| CrispASR binary + CUDA 12 runtime | inside the `aerochorus-worker` image | re-creatable (`crispasr.lock`, the Dockerfile) |
+| settings and secrets | `/srv/aerochorus/config` | critical: in the nightly backup |
 
 ## Identity rules that survive the move
 

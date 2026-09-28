@@ -1,99 +1,203 @@
-# Linux GTX 1070 deployment runbook (ADR-021)
+# Linux GTX 1070 deployment runbook: containers only (ADR-021, ADR-023)
 
-The diagram is in [ARCHITECTURE.md](ARCHITECTURE.md), and data migration from
-the Windows dev box is in [MIGRATION.md](MIGRATION.md). Record results in
+The Linux desktop runs AeroChorus **as containers only**. There is no
+repository, Python, Node or editor on it. Everything is built on the Windows
+PC and shipped as one folder (a *deploy bundle*). The diagram is in
+[ARCHITECTURE.md](ARCHITECTURE.md), and data migration is in
+[MIGRATION.md](MIGRATION.md). Record results in
 [LINUX_GTX1070_MIGRATION_REPORT.md](LINUX_GTX1070_MIGRATION_REPORT.md).
 
-Everything below runs **on the Linux host**, from a clone of this repository,
-as the user who will own the services. The scripts use `sudo` only for
-system files.
-
-## 0. Before you start
-
-- Stop the old Frigate stack if it holds the GPU:
-  `docker ps | grep -i frigate`, then `docker compose down` in its directory.
-  Check that `nvidia-smi` shows no processes.
-- NVIDIA driver: Pascal is supported by the 5xx branches. Driver 580 is the
-  last branch with Pascal support, so do not upgrade past it. Any driver
-  whose `nvidia-smi` reports CUDA ≥ 12.0 works with the pinned CUDA 12
-  build.
-- Docker Engine and the compose plugin are required. The NVIDIA container
-  toolkit is **not** needed: CrispASR runs natively.
-
-```bash
-git clone https://github.com/sagejessee-ship-it/atctranscribe ~/atctranscribe
-cd ~/atctranscribe
-bash deploy/linux/inventory.sh --json /tmp/inventory.json   # read-only: what is this machine?
+```text
+Windows PC (dev)                         Linux host (deploy target)
+  package.ps1 ──► aerochorus-deploy-<tag>/ ──copy──►  host-setup.sh (once, sudo)
+   builds images   images-<tag>.tar.gz                deploy.sh up   (install + every update)
+                   kit: compose.yml, scripts,         /srv/aerochorus/{config,deploy,postgres,models,…}
+                   templates, SHA256SUMS              review UI  http://<host>:8080/review
 ```
 
-## 1. Mount the collector's archive read-only
+## 0. What the host needs
 
-```bash
-sudo apt install -y cifs-utils
-sudo install -d -m 755 /etc/aerochorus /mnt/aerochorus/atc
-sudo install -m 600 /dev/null /etc/aerochorus/smb.cred   # username=… / password=… (read-only share user)
-sudoedit /etc/aerochorus/smb.cred
-# add the line from deploy/linux/fstab.example to /etc/fstab, then:
-sudo systemctl daemon-reload && sudo mount /mnt/aerochorus/atc
-ls /mnt/aerochorus/atc/2026/09/08 | head
-```
-
-The mount is `ro`, `nofail`, `x-systemd.automount`. If the collector is
-offline, boot continues. Scans then report `source_unavailable` and change
-nothing, and the UI's audio shows "source audio unavailable" (ADR-013,
-ADR-016).
-
-## 2. Run setup
-
-```bash
-deploy/linux/setup.sh            # all phases; idempotent (safe to re-run)
-deploy/linux/setup.sh --phase smoke
-```
-
-| phase | does |
+| item | notes |
 | --- | --- |
-| `inventory` | creates `/srv/aerochorus/*`, records OS/CPU/RAM/storage/GPU/driver in `logs/inventory-*.json` |
-| `mount` | checks the mount is present and `ro`; a write probe must be refused; reads one real segment |
-| `driver` | `nvidia-smi`, the GPU, compute capability, and why CUDA 12 is required |
-| `python` | installs `uv` if missing; `uv sync --frozen` |
-| `crispasr` | `install-crispasr.sh`: pinned v0.8.37 CUDA 12 tarball, SHA-256 verified, CUDA 12 runtime wheels if the host has none, `--diagnostics` (fails on "no kernel image"), then a source-build fallback with `-DCMAKE_CUDA_ARCHITECTURES=61`; writes `crispasr/current/INSTALLED.json` |
-| `config` | `/etc/aerochorus/worker.toml` (profile `linux_pascal_8gb`, mount, native binary, CUDA 12 `LD_LIBRARY_PATH`), `/etc/aerochorus/aerochorus.env`, repository `.env` |
-| `services` | Compose: Postgres on loopback, migrations, API on loopback; `models sync`; registers `home_atc_archive` if new |
-| `ui` | builds `ui/dist` in a throwaway `node:24` container |
-| `systemd` | installs and enables `aerochorus-edge`, `aerochorus-worker`, `aerochorus-backup.timer` |
-| `smoke` | `worker qualify --suite smoke-linux1070` (Whisper on CUDA + Parakeet) on 5 real segments, then a tiny 5-segment sweep processed by the worker service, checking that 10 results were persisted |
-| `report` | service status and the LAN URL |
+| Ubuntu 22.04/24.04 (or Debian) | `host-setup.sh` uses apt |
+| NVIDIA driver ≥ 570 | The worker image carries the CUDA 12.8 runtime. **580 is the last branch that supports Pascal**: never go past it. `host-setup.sh --install-driver` installs 580. |
+| Docker Engine + Compose plugin | installed by `host-setup.sh` if missing (Frigate likely brought Docker already) |
+| NVIDIA Container Toolkit | installed and configured by `host-setup.sh`, then proven with a GPU container |
+| the collector share | mounted read-only at `/mnt/aerochorus/atc` by `host-setup.sh` |
+| SSH from the PC (optional) | `ssh-copy-id <user>@192.168.68.53` makes copying the bundle easy |
+| free disk | about 15 GB for images and models to start (all 18 models ≈ 20 GB), plus the database (≈ 1 GB) and artifacts |
 
-The pinned CUDA 12 release was checked (2026-09-27, in a GPU container) to
-contain `cuda archs: 60-real,61-real,70-real,75-real,86-real,89-real,120-real`.
-Native Pascal kernels are included, so the source build should not be needed.
+## 1. Build the bundle (Windows PC)
 
-## 3. Open the UI from the Mac
-
-`http://<linux-host-ip>:8080/review`. `setup.sh` prints the address. If mDNS
-(avahi) is running, `http://<hostname>.local:8080` also works. There is no
-authentication: keep it on the LAN and never port-forward.
-
-## 4. Services and logs
-
-```bash
-systemctl status aerochorus-edge aerochorus-worker
-journalctl -u aerochorus-worker -f
-docker compose -f docker-compose.yml -f deploy/linux/compose.linux.yml ps
-curl -s http://127.0.0.1:8000/health
-uv run aerochorus worker inventory          # detected profile, GPU, CUDA, CrispASR identity
+```powershell
+cd C:\Users\sagej\Projects\atctranscribe
+powershell -ExecutionPolicy Bypass -File deploy\linux\package.ps1
 ```
 
-Reboot test (acceptance): `sudo reboot`, then check that the UI answers,
-`systemctl is-active aerochorus-edge aerochorus-worker docker` reports
-active, and `/health` returns `ok`.
+This builds `aerochorus-app:<tag>` and `aerochorus-worker:<tag>`, where
+`<tag>` is `<date>-<commit>`. The worker image contains the pinned CUDA 12
+CrispASR, sha256-verified. The script saves both, plus `postgres:17`, into
+`%USERPROFILE%\aerochorus-data\deploy\aerochorus-deploy-<tag>\` together with
+the kit and checksums. That is about 2 GB compressed, and the save takes a
+few minutes.
 
-## 5. Memory strategy on 8 GB
+## 2. Copy it to the host
+
+```powershell
+scp -r "$env:USERPROFILE\aerochorus-data\deploy\aerochorus-deploy-<tag>" <user>@192.168.68.53:~/
+```
+
+A USB disk or a network share works too. `deploy.sh` verifies `SHA256SUMS`
+before it uses anything.
+
+## 3. Prepare the host (once)
+
+```bash
+cd ~/aerochorus-deploy-<tag>
+sudo bash host-setup.sh --stop-frigate   # `bash`: copies from Windows lose the executable bit
+```
+
+Every step checks first, so the script is safe to re-run. In order, it:
+
+1. **Inventory**: OS, CPU, RAM, GPU, driver and disk, written to
+   `/srv/aerochorus/logs/inventory-*.json` (read-only).
+2. **Driver**: requires ≥ 570. Without it, re-run with `--install-driver`,
+   then reboot and run again.
+3. **Docker Engine + Compose plugin**, and adds you to the `docker` group.
+   Log out and back in before running `deploy.sh`.
+4. **NVIDIA Container Toolkit**, then `docker run --gpus all … nvidia-smi -L`
+   must list the GTX 1070.
+5. **Frigate**: `--stop-frigate` stops it and disables its restart. Also
+   lists GPU processes, and warns if ports 8080, 8000 or 5432 are taken.
+6. **Share**: asks once for the share user and password. They are stored in
+   `/etc/aerochorus/smb.cred`, root-only. It adds a read-only, `nofail`,
+   automount line to `/etc/fstab` (see `fstab.example`), mounts the share,
+   and **proves a write is refused**.
+7. **`/srv/aerochorus`** directories, and the `aerochorus` CLI wrapper in
+   `/usr/local/bin`.
+
+Options: `--share //192.168.68.84/bwi`, `--mount /mnt/aerochorus/atc`,
+`--data /srv/aerochorus`, and `--skip-mount`.
+
+## 4. Deploy (first install and every update)
+
+```bash
+bash deploy.sh up          # from the bundle folder
+```
+
+The script:
+
+1. verifies the bundle checksums;
+2. installs the kit into `/srv/aerochorus/deploy`, keeping the old one in
+   `deploy.prev`;
+3. runs `docker load` for the images;
+4. on the first run, writes `/srv/aerochorus/config/aerochorus.env` (random
+   database password, chmod 600) and `/srv/aerochorus/config/worker.toml`;
+5. starts the services;
+6. runs the smoke checks:
+   - the API is healthy;
+   - the UI answers **and the archive is readable inside the container**;
+   - the worker container sees the GPU;
+   - the CrispASR identity is printed;
+   - the worker has sent a heartbeat.
+
+It ends with the review UI address.
+
+| service | what | exposure |
+| --- | --- | --- |
+| `postgres` | PostgreSQL 17, data in `/srv/aerochorus/postgres` | 127.0.0.1:5432 only |
+| `migrate` | applies migrations, then exits | — |
+| `api` | control plane (FastAPI) | 127.0.0.1:8000 |
+| `edge` | **review web UI**, API proxy, read-only sha256-checked audio | **LAN :8080** |
+| `worker` | scans, heartbeats, queued sweeps; CrispASR on the GPU, one model at a time | — |
+| `backup` | nightly `pg_dump` at 03:00 into `/srv/aerochorus/backups` | — |
+| `adjudicator` | optional and paid (ADR-022); only if `AEROCHORUS_ADJUDICATOR=1` | outbound HTTPS |
+| `cli` | one-off commands via `aerochorus …` | — |
+
+There is no authentication. Keep the UI on the trusted LAN and never
+port-forward it.
+
+## 5. Data
+
+**Migrating from the Windows PC** (the normal case; see
+[MIGRATION.md](MIGRATION.md)). Export on Windows, copy the export folder,
+then:
+
+```bash
+/srv/aerochorus/deploy/import.sh /srv/aerochorus/backups/migration-<stamp>
+```
+
+It restores into a fresh database, then **compares every table count and
+fingerprint** with the export. It then brings the schema to head and unpacks
+the old raw artifacts (read-only) and the ATCO2 clips.
+
+**Starting empty instead:**
+
+```bash
+aerochorus source add home_atc_archive --name "Home ATC archive" --parser rtlsdr_airband --timezone America/New_York
+aerochorus models sync
+aerochorus airport bootstrap KBWI --timezone America/New_York --station BWI
+aerochorus airport airspace KBWI
+```
+
+**Then, in both cases**, fetch models. They are downloaded and verified by
+sha256:
+
+```bash
+aerochorus worker models pull --suite smoke-linux1070
+```
+
+## 6. Open the UI
+
+Open `http://<linux-host-ip>:8080/review` from the Mac or any PC. Run
+`/srv/aerochorus/deploy/deploy.sh status` to print the address.
+
+## 7. Day-to-day operation
+
+```bash
+D=/srv/aerochorus/deploy/deploy.sh
+$D status                 # containers, image tag, adjudicator on/off, UI address
+$D smoke                  # the checks again
+$D logs worker            # or api, edge, backup, adjudicator (Ctrl-C to stop following)
+$D restart edge
+$D backup                 # a backup now
+$D down / $D up           # stop / start (data and config stay)
+$D compose ps             # any docker compose command against this deployment
+aerochorus worker health  # the CLI, in a one-off container
+```
+
+**Settings and secrets** live in `/srv/aerochorus/config/aerochorus.env`:
+OpenSky, OpenRouter, ports and backup hour. Edit the file, then run `$D up`
+to apply. **Worker settings** (sources, memory strategies) live in
+`/srv/aerochorus/config/worker.toml`. Edit it, then run `$D restart worker`.
+
+**Reboot test** (acceptance): run `sudo reboot`. Afterwards `$D status`
+should show every service `Up`, the UI should answer, and `$D smoke` should
+pass. The containers are `restart: unless-stopped`.
+
+## 8. Updates and rollback
+
+To update, make a new bundle on the PC, copy it, and run `bash deploy.sh up`
+in it. Only the tag changes in `aerochorus.env`. The config, data and database
+stay. Migrations run automatically.
+
+To roll back, the previous images are still loaded:
+
+```bash
+sed -i 's/^AEROCHORUS_TAG=.*/AEROCHORUS_TAG=<previous tag>/' /srv/aerochorus/config/aerochorus.env
+cp -a /srv/aerochorus/deploy.prev/. /srv/aerochorus/deploy/ && /srv/aerochorus/deploy/deploy.sh compose up -d
+```
+
+Rolling back across a migration needs a backup restore (see
+[BACKUP.md](BACKUP.md)). Old images take space: remove them with
+`docker image rm aerochorus-app:<old> aerochorus-worker:<old>`.
+
+## 9. Memory strategy on 8 GB
 
 Defaults: quantized weights (q4_k/q8_0 in the catalog), one model resident,
 no offload. If a model OOMs or runs too close to 8 GB, give **only that
-model** an override in `/etc/aerochorus/worker.toml`, escalating in this
-order:
+model** an override in `/srv/aerochorus/config/worker.toml`, escalating in
+this order:
 
 ```toml
 [transcription.model_runtime."canary-qwen-2.5b-q4_k"]
@@ -106,64 +210,89 @@ env = { CRISPASR_KV_QUANT = "q8_0" }
 # last resort, manual experiment only: GGML_CUDA_ENABLE_UNIFIED_MEMORY = "1"
 ```
 
-The strategy and its env are recorded with every run and every
-qualification, and they are part of the runtime fingerprint. Re-qualify
-after changing them.
+The strategy and its env are recorded with every run and qualification, and
+they are part of the runtime fingerprint. Re-qualify after changing them.
 
-## 6. Qualification (before any production sweep)
+## 10. Qualification (before any production sweep)
+
+Qualification needs the GPU, so it runs in the worker service's container
+with the daemon stopped. The two never share 8 GB of VRAM.
 
 ```bash
+D=/srv/aerochorus/deploy/deploy.sh
+$D compose stop worker
 # roster attempt: every candidate, 20 real segments (deterministic sample), pulls models as needed
-uv run aerochorus worker qualify --suite qualify-linux1070 --n 20 --seed 1 --pull \
+$D compose run --rm worker aerochorus worker qualify --suite qualify-linux1070 --n 20 --seed 1 --pull \
     --utc-from 2026-09-08T12:00:00Z --utc-to 2026-09-09T00:00:00Z
-uv run aerochorus models qualifications --profile linux_pascal_8gb
-```
-
-The "one-hour qualification corpus" is about 400 BWI segments, since
-segments average about 9 s:
-
-```bash
-uv run aerochorus worker qualify --suite core-atc-linux1070 --n 400 --seed 2 \
+# the "one-hour" corpus (~400 BWI segments):
+$D compose run --rm worker aerochorus worker qualify --suite core-atc-linux1070 --n 400 --seed 2 \
     --utc-from 2026-09-08T00:00:00Z --utc-to 2026-09-09T00:00:00Z
+$D compose start worker
+aerochorus models qualifications --profile linux_pascal_8gb
 ```
 
-States: `qualified`, `qualified_cpu_only`, `qualified_with_offload`,
-`too_slow` (RTF > 1.0 by default, `--max-rtf`), `oom`, `backend_failure`
-(including "loads but returns nothing usable"), `unsupported_on_platform`,
-`not_relevant`, `experimental`. A worker on this profile never claims a
-model recorded as `oom`, `backend_failure`, `unsupported_on_platform` or
-`not_relevant`, and such a model never blocks the rest of a sweep.
+States:
+
+- `qualified`, `qualified_cpu_only`, `qualified_with_offload`;
+- `too_slow` (RTF > 1.0 by default; see `--max-rtf`);
+- `oom`;
+- `backend_failure` (including "loads but returns nothing usable");
+- `unsupported_on_platform`, `not_relevant`, `experimental`.
+
+A worker on this profile never claims a model recorded as `oom`,
+`backend_failure`, `unsupported_on_platform` or `not_relevant`. Such a model
+never blocks the rest of a sweep.
 
 Then decide, explicitly:
 
 ```bash
-uv run aerochorus models set <name> --eligible            # may full sweeps use it
-# ensemble voting is catalog-controlled: set ensemble_eligible = true in config/models.toml
-# for a qualified model you trust, then `aerochorus models sync`
-# rewrite [suites.full-qualified-linux1070] in config/models.toml from the report, then sync
+aerochorus models set <name> --eligible     # may full sweeps use it
 ```
 
-## 7. Production backlog: only on explicit action
+Ensemble voting and the `full-qualified-linux1070` suite are set in
+`config/models.toml` in the repository. Change them on the PC, ship a new
+bundle, then run `aerochorus models sync`.
 
-1. Validate DB state: `/health`, `aerochorus source summary home_atc_archive`.
-2. Validate source paths: `aerochorus worker health`.
-3. Run the smoke corpus: `setup.sh --phase smoke`.
-4. Run the one-hour qualification (§6) and inspect it.
-5. Create the backlog sweep yourself, on the web UI's Transcribe page or
-   with `aerochorus sweep create --suite full-qualified-linux1070 …`. The
-   worker service processes it; nothing is created automatically.
+## 11. Production backlog: only on explicit action
 
-## 8. Failure behaviour
+Nothing transcribes by itself. The worker only processes sweeps someone
+queued.
+
+1. Run `$D smoke`, then `aerochorus source summary home_atc_archive`.
+2. Run the qualification (§10), and look at the results.
+3. Queue the backlog yourself: on the web UI's **Transcribe** page (pick the
+   days, the channels and the qualified models), or with
+   `aerochorus sweep create --suite full-qualified-linux1070 …`.
+
+## 12. Failure behaviour
 
 | event | effect |
 | --- | --- |
 | collector offline or mount lost | scans and sweeps release work as `source_unavailable`; segments are never marked missing on an unavailable source; the UI audio shows 503 with the reason |
-| worker killed or host rebooted mid-sweep | the model run is released or its lease expires; the next claim resumes only the missing segments (ADR-014) |
+| worker container stopped or host rebooted mid-sweep | the worker stops on SIGINT and releases the model run (or its lease expires); the next claim resumes only the missing segments (ADR-014) |
 | a model OOMs or crashes | that model run fails and is recorded; other models continue; `worker qualify` marks it `oom` or `backend_failure` for this profile |
-| CrispASR runtime changed | a started model run refuses to resume (fingerprint); create a new sweep |
+| CrispASR runtime changed (new worker image with a new CrispASR) | a started model run refuses to resume (fingerprint); create a new sweep |
+| driver older than 570 | the worker container does not start ("cuda>=12.8" requirement); `host-setup.sh` catches this first |
 
-## 9. Backups
+## 13. Backups
 
-See [BACKUP.md](BACKUP.md): a nightly `aerochorus-backup.timer` writes a
-pg_dump plus critical files to `/srv/aerochorus/backups`. Copy them off the
-host.
+See [BACKUP.md](BACKUP.md). The `backup` service writes a nightly `pg_dump`,
+counts and fingerprints, and the config, to `/srv/aerochorus/backups`. Copy
+them off the host.
+
+## 14. Optional services
+
+- **Model adjudication** (ADR-022, paid): set `AEROCHORUS_ADJUDICATOR=1` and
+  `AEROCHORUS_OPENROUTER_API_KEY=…` in `aerochorus.env`, then run `$D up`.
+  It works only on batches confirmed in the UI under a cost cap.
+- **The 5080 PC as an extra worker**: set `AEROCHORUS_API_BIND=<host LAN
+  IP>` in `aerochorus.env` and run `$D up`. On Windows, set `api_url =
+  "http://<linux-host>:8000"` in the worker config. The PC keeps its own
+  hardware profile (`windows_blackwell_16gb`) and the `jesseepc` artifact
+  store. The API has no authentication, so do this only on a trusted LAN.
+
+## Fallback: native install
+
+If the NVIDIA Container Toolkit cannot be used on the host, the earlier
+native kit (a repository checkout, uv, the pinned binary, systemd) is in
+`deploy/linux/native/`. It needs the full toolchain on the host.

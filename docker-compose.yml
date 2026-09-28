@@ -1,4 +1,6 @@
-# Control plane only (ADR-005). CrispASR and the worker run natively on the host.
+# Development control plane on this PC (Windows / 5080). The worker, CrispASR and the
+# review edge run natively here. The Linux host runs everything in containers from
+# deploy/linux/compose.yml instead (ADR-023).
 name: aerochorus
 
 services:
@@ -14,14 +16,16 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aerochorus -d aerochorus"]
+      # Over TCP: during first initialisation the temporary server listens on the Unix
+      # socket only, so a socket check would pass before the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U aerochorus -d aerochorus"]
       interval: 5s
       timeout: 3s
       retries: 20
     restart: unless-stopped
 
   migrate:
-    build: .
+    build: { context: ., target: app }
     command: ["aerochorus", "db", "upgrade"]
     environment:
       AEROCHORUS_DATABASE_URL: postgresql+psycopg://aerochorus:aerochorus@postgres:5432/aerochorus
@@ -30,7 +34,7 @@ services:
         condition: service_healthy
 
   api:
-    build: .
+    build: { context: ., target: app }
     command: ["aerochorus", "api", "serve", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       AEROCHORUS_DATABASE_URL: postgresql+psycopg://aerochorus:aerochorus@postgres:5432/aerochorus

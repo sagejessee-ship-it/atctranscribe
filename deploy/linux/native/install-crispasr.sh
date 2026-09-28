@@ -2,15 +2,15 @@
 # Install the pinned CUDA 12 CrispASR build for a Pascal (GTX 1070) host (ADR-021).
 # Idempotent: re-running verifies instead of re-downloading.
 #
-#   deploy/linux/install-crispasr.sh [--prefix /srv/aerochorus] [--build-from-source] [--cpu]
+#   deploy/linux/native/install-crispasr.sh [--prefix /srv/aerochorus] [--build-from-source] [--cpu]
 #
 # Result: $PREFIX/crispasr/<version>/crispasr (+ INSTALLED.json with hashes, runtime,
 # driver, GPU, build flags) and $PREFIX/crispasr/current -> <version>.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=crispasr.lock
-. "$HERE/crispasr.lock"
+# shellcheck source=../crispasr.lock
+. "$HERE/../crispasr.lock"
 PREFIX="/srv/aerochorus"
 MODE="release"
 while [[ $# -gt 0 ]]; do

@@ -139,6 +139,10 @@ export function AdsbContext({
               {snapshot.response_sha256.slice(0, 12)}
             </span>{" "}
             · snapshot #{snapshot.id} fetched {fmtUtc(snapshot.fetched_at)}Z
+            {snapshot.provider_meta.interpolated ? " · positions interpolated from tracks" : ""}
+            {typeof snapshot.provider_meta.credits_remaining === "number"
+              ? ` · OpenSky credits left ${snapshot.provider_meta.credits_remaining}`
+              : ""}
           </p>
           <Button size="sm" onClick={() => fetcher.mutate(true)} disabled={fetcher.isPending}>
             <RefreshCw size={12} aria-hidden /> {fetcher.isPending ? "Refreshing…" : "Refresh context"}

@@ -1,7 +1,11 @@
 # ADR-021: Primary deployment on Linux with a GTX 1070 (8 GB) and 32 GB RAM
 
 Status: Accepted (2026-09-27). Supersedes the macOS parts of ADR-005 and the
-"M1 as control plane" plan (docs/plan.md, runbook §10).
+"M1 as control plane" plan (docs/plan.md, runbook §10). **Amended by
+[ADR-023](0023-container-only-linux-deployment.md):** the worker and review edge
+now run as containers (GPU via the NVIDIA Container Toolkit) instead of native
+systemd services. Everything else here stands: the host, CUDA 12 on Pascal,
+hardware profiles, qualification, and eligibility.
 
 ## Context
 

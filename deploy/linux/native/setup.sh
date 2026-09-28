@@ -4,14 +4,14 @@
 # Run from the repository checkout, as the user that will own the services
 # (sudo is used for system files only):
 #
-#   deploy/linux/setup.sh                 # every phase, in order
-#   deploy/linux/setup.sh --phase smoke   # one phase
+#   deploy/linux/native/setup.sh                 # every phase, in order
+#   deploy/linux/native/setup.sh --phase smoke   # one phase
 #
 # Phases: inventory mount driver python crispasr config services ui systemd smoke report
 # Nothing here starts a production backlog: sweeps run only when someone creates one.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HERE="$REPO/deploy/linux"
 DATA="${AEROCHORUS_DATA:-/srv/aerochorus}"
 MOUNT="${AEROCHORUS_CORPUS_MOUNT:-/mnt/aerochorus/atc}"
@@ -37,7 +37,7 @@ phase_inventory() {
   sudo mkdir -p "$DATA"/{postgres,models,artifacts,exports,cache,context,logs,backups}
   sudo chown -R "$RUN_USER" "$DATA"
   sudo chown -R 999:999 "$DATA/postgres" 2>/dev/null || true  # postgres container uid
-  bash "$HERE/inventory.sh" --json "$DATA/logs/inventory-$(date +%Y%m%d).json" --mount "$MOUNT"
+  bash "$HERE/../inventory.sh" --json "$DATA/logs/inventory-$(date +%Y%m%d).json" --mount "$MOUNT"
 }
 
 phase_mount() {
@@ -125,7 +125,7 @@ EOF
   fi
 }
 
-compose() { (cd "$REPO" && docker compose -f docker-compose.yml -f deploy/linux/compose.linux.yml "$@"); }
+compose() { (cd "$REPO" && docker compose -f docker-compose.yml -f deploy/linux/native/compose.linux.yml "$@"); }
 
 phase_services() {
   say "13. PostgreSQL + API (Docker Compose, restart unless-stopped)"

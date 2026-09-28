@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The AeroChorus CLI on the container host: runs `aerochorus <args>` in a one-off
+# container of the worker image (Python, ffmpeg, CrispASR; no GPU), on the same
+# network, config and data as the services. No Python on the host.
+#
+#   aerochorus airport bootstrap KBWI --timezone America/New_York --station BWI
+#   aerochorus airport airspace KBWI
+#   aerochorus worker models pull --suite smoke-linux1070
+#   aerochorus adjudicate list
+#
+# GPU work (model qualification) runs in the worker service instead; see
+# docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md.
+set -euo pipefail
+DATA="${AEROCHORUS_DATA:-/srv/aerochorus}"
+exec docker compose -p "${AEROCHORUS_PROJECT:-aerochorus}" --env-file "$DATA/config/aerochorus.env" \
+  -f "$DATA/deploy/compose.yml" --profile tools run --rm cli aerochorus "$@"

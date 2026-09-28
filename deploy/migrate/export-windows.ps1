@@ -35,5 +35,6 @@ Get-ChildItem $dest -File | Where-Object Name -ne "SHA256SUMS" | ForEach-Object 
   "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 } | Set-Content -Encoding ascii "$dest\SHA256SUMS"
 Get-ChildItem $dest | Format-Table Name, Length
-Write-Host "Copy $dest to the Linux host, e.g.:"
+Write-Host "Copy $dest to the Linux host and import it there (docs/deployment/MIGRATION.md):"
 Write-Host "  scp -r `"$dest`" <user>@<linux-host>:/srv/aerochorus/backups/migration-$stamp"
+Write-Host "  /srv/aerochorus/deploy/import.sh /srv/aerochorus/backups/migration-$stamp"

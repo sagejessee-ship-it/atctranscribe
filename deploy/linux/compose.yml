@@ -1,0 +1,223 @@
+# AeroChorus on the Linux GPU host: containers only (ADR-023).
+#
+# Managed by deploy.sh, which runs:
+#   docker compose -p aerochorus --env-file $AEROCHORUS_DATA/config/aerochorus.env \
+#                  -f $AEROCHORUS_DATA/deploy/compose.yml ...
+# Images come from the deploy bundle (docker load); nothing is built or pulled here
+# except postgres:17 if the bundle did not include it.
+#
+# Host layout ($AEROCHORUS_DATA, default /srv/aerochorus):
+#   config/aerochorus.env  settings + secrets (chmod 600)    config/worker.toml
+#   deploy/                this file + scripts (replaced on each update)
+#   postgres/ models/ artifacts/ artifacts-jesseepc/ corpora/ exports/ backups/ logs/
+# The collector's archive is a read-only CIFS mount on the host ($AEROCHORUS_CORPUS_MOUNT).
+#
+# Network exposure: only the review web UI (edge, :8080) on the LAN. PostgreSQL and
+# the API are bound to loopback. No authentication: trusted LAN only, never
+# port-forward.
+name: aerochorus
+
+# AeroChorus services run as the host operator, so files they write under
+# /srv/aerochorus (models, artifacts, exports, backups) stay theirs, not root's.
+x-app: &app
+  image: aerochorus-app:${AEROCHORUS_TAG:?AEROCHORUS_TAG missing from aerochorus.env}
+  pull_policy: never
+  restart: unless-stopped
+  user: "${AEROCHORUS_UID:-1000}:${AEROCHORUS_GID:-1000}"
+  environment: &app-env
+    AEROCHORUS_DATABASE_URL: postgresql+psycopg://aerochorus:${POSTGRES_PASSWORD:?}@postgres:5432/aerochorus
+    TZ: ${TZ:-America/New_York}
+    HOME: /tmp
+
+# The collector's archive, read-only twice over (kernel mount + bind), and the
+# AeroChorus-owned local corpora (e.g. the ATCO2 benchmark clips).
+x-corpus-archive: &corpus-archive "${AEROCHORUS_CORPUS_MOUNT:?}:/corpus/home_atc_archive:ro"
+x-corpus-local: &corpus-local "${AEROCHORUS_DATA:?}/corpora:/corpus/local:ro"
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: aerochorus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: aerochorus
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - ${AEROCHORUS_DATA}/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${AEROCHORUS_PG_PORT:-5432}:5432" # loopback only, never the LAN
+    shm_size: 256mb
+    healthcheck:
+      # Over TCP: during first initialisation the temporary server listens on the Unix
+      # socket only, so a socket check would pass before the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U aerochorus -d aerochorus"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["aerochorus", "db", "upgrade"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["aerochorus", "api", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *app-env
+      # On-demand ADS-B context (ADR-020): server-side only, never sent to browsers.
+      AEROCHORUS_OPENSKY_USERNAME: ${AEROCHORUS_OPENSKY_USERNAME:-}
+      AEROCHORUS_OPENSKY_PASSWORD: ${AEROCHORUS_OPENSKY_PASSWORD:-}
+      AEROCHORUS_OPENSKY_CLIENT_ID: ${AEROCHORUS_OPENSKY_CLIENT_ID:-}
+      AEROCHORUS_OPENSKY_CLIENT_SECRET: ${AEROCHORUS_OPENSKY_CLIENT_SECRET:-}
+      AEROCHORUS_ADSB_PROVIDER: ${AEROCHORUS_ADSB_PROVIDER:-auto}
+      # Adjudication limits (ADR-022). The API never holds the OpenRouter key.
+      AEROCHORUS_ADJUDICATION_MAX_BATCH_USD: ${AEROCHORUS_ADJUDICATION_MAX_BATCH_USD:-25}
+    ports:
+      # Loopback by default. Set AEROCHORUS_API_BIND to the LAN address only if a
+      # remote worker (e.g. the Windows 5080 box) must reach it.
+      - "${AEROCHORUS_API_BIND:-127.0.0.1}:${AEROCHORUS_API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  edge:
+    # Review web UI + API proxy + read-only, sha256-verified source audio (ADR-016).
+    <<: *app
+    command:
+      - aerochorus
+      - ui
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --api
+      - http://api:8000
+    volumes:
+      - ${AEROCHORUS_DATA}/config/worker.toml:/etc/aerochorus/worker.toml:ro
+      - *corpus-archive
+      - *corpus-local
+    ports:
+      - "${AEROCHORUS_EDGE_BIND:-0.0.0.0}:${AEROCHORUS_EDGE_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  worker:
+    # Transcription (one model resident at a time), scans, heartbeats. GPU via the
+    # NVIDIA Container Toolkit. Queued sweeps only: nothing starts a backlog by itself.
+    image: aerochorus-worker:${AEROCHORUS_TAG:?}
+    pull_policy: never
+    restart: unless-stopped
+    user: "${AEROCHORUS_UID:-1000}:${AEROCHORUS_GID:-1000}"
+    command: ["aerochorus", "worker", "run"]
+    stop_signal: SIGINT # graceful: the active model run is released and resumes later
+    stop_grace_period: 90s
+    environment:
+      TZ: ${TZ:-America/New_York}
+      HOME: /tmp
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ${AEROCHORUS_DATA}/config/worker.toml:/etc/aerochorus/worker.toml:ro
+      - *corpus-archive
+      - *corpus-local
+      - ${AEROCHORUS_DATA}/models:/data/models
+      - ${AEROCHORUS_DATA}/artifacts:/data/artifacts
+      - ${AEROCHORUS_DATA}/artifacts-jesseepc:/data/artifacts-jesseepc:ro
+      - ${AEROCHORUS_DATA}/exports:/data/exports
+      - ${AEROCHORUS_DATA}/logs:/data/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  adjudicator:
+    # Optional, paid (ADR-022). Starts only with AEROCHORUS_ADJUDICATOR=1 in
+    # aerochorus.env (deploy.sh adds --profile adjudication). Works only on batches a
+    # human confirmed in the UI under a cost cap. Holds the OpenRouter key.
+    <<: *app
+    profiles: ["adjudication"]
+    command:
+      - aerochorus
+      - adjudicate
+      - run
+      - --follow
+      - --concurrency
+      - "2"
+      - --api
+      - http://api:8000
+    stop_signal: SIGINT
+    environment:
+      <<: *app-env
+      AEROCHORUS_OPENROUTER_API_KEY: ${AEROCHORUS_OPENROUTER_API_KEY:-}
+    volumes:
+      - ${AEROCHORUS_DATA}/config/worker.toml:/etc/aerochorus/worker.toml:ro
+      - *corpus-archive
+      - *corpus-local
+    depends_on:
+      api:
+        condition: service_healthy
+
+  backup:
+    # Nightly pg_dump (custom format) + row counts/fingerprints + critical files.
+    image: postgres:17
+    restart: unless-stopped
+    user: "${AEROCHORUS_UID:-1000}:${AEROCHORUS_GID:-1000}"
+    command: ["bash", "/deploy/backup.sh", "--loop"]
+    environment:
+      PGHOST: postgres
+      PGUSER: aerochorus
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      PGDATABASE: aerochorus
+      TZ: ${TZ:-America/New_York}
+      BACKUP_HOUR: ${AEROCHORUS_BACKUP_HOUR:-3}
+      BACKUP_KEEP_DAYS: ${AEROCHORUS_BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ${AEROCHORUS_DATA}/deploy/backup.sh:/deploy/backup.sh:ro
+      - ${AEROCHORUS_DATA}/deploy/counts.sql:/deploy/counts.sql:ro
+      - ${AEROCHORUS_DATA}/config:/data/config:ro
+      - ${AEROCHORUS_DATA}/exports:/data/exports:ro
+      - ${AEROCHORUS_DATA}/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  cli:
+    # One-off commands: ./aerochorus <command> (deploy.sh installs the wrapper).
+    # Same image as the worker (ffmpeg, CrispASR) but no GPU: GPU work such as
+    # qualification runs in the worker service (see the runbook).
+    image: aerochorus-worker:${AEROCHORUS_TAG:?}
+    pull_policy: never
+    profiles: ["tools"]
+    user: "${AEROCHORUS_UID:-1000}:${AEROCHORUS_GID:-1000}"
+    environment:
+      TZ: ${TZ:-America/New_York}
+      HOME: /data/home
+      AEROCHORUS_DATABASE_URL: postgresql+psycopg://aerochorus:${POSTGRES_PASSWORD:?}@postgres:5432/aerochorus
+      AEROCHORUS_API_URL: http://api:8000
+    volumes:
+      - ${AEROCHORUS_DATA}/config/worker.toml:/etc/aerochorus/worker.toml:ro
+      - *corpus-archive
+      - *corpus-local
+      - ${AEROCHORUS_DATA}/models:/data/models
+      - ${AEROCHORUS_DATA}/artifacts:/data/artifacts
+      - ${AEROCHORUS_DATA}/artifacts-jesseepc:/data/artifacts-jesseepc:ro
+      - ${AEROCHORUS_DATA}/exports:/data/exports
+      - ${AEROCHORUS_DATA}/logs:/data/logs
+      - ${AEROCHORUS_DATA}/cache:/data/home/.aerochorus/cache

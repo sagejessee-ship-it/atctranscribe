@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Import an export-windows.ps1 bundle on the Linux host, then verify it.
 #
-#   deploy/migrate/import-linux.sh /srv/aerochorus/backups/migration-<stamp>
+#   deploy/linux/native/import-linux.sh /srv/aerochorus/backups/migration-<stamp>
 #
 # Order: checksums -> empty DB with Postgres only -> pg_restore -> migrate to head
 # -> counts/fingerprints compared -> artifacts + ATCO2 clips unpacked.
@@ -9,9 +9,9 @@
 set -euo pipefail
 
 BUNDLE="$(cd "${1:?usage: import-linux.sh <bundle dir>}" && pwd)"
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DATA="${AEROCHORUS_DATA:-/srv/aerochorus}"
-compose() { (cd "$REPO" && docker compose -f docker-compose.yml -f deploy/linux/compose.linux.yml "$@"); }
+compose() { (cd "$REPO" && docker compose -f docker-compose.yml -f deploy/linux/native/compose.linux.yml "$@"); }
 psql_() { compose exec -T postgres psql -U aerochorus -d aerochorus "$@"; }
 
 echo "1/6 checksums"

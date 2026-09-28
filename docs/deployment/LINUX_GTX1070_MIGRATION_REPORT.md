@@ -2,15 +2,19 @@
 
 **Status: prepared and verified off-host. On-host execution is pending.**
 
+**Deployment is containers only (ADR-023).** The images and a deploy bundle
+are built on the Windows PC (`deploy\linux\package.ps1`). On the host,
+`sudo bash host-setup.sh` runs once, then `bash deploy.sh up`, then
+`import.sh` for the data. See
+[LINUX_DEPLOYMENT_RUNBOOK.md](LINUX_DEPLOYMENT_RUNBOOK.md).
+
 The Linux host (`192.168.68.53`, reachable on the LAN) accepts SSH only with a
 key or password. No key was provided, and passwords are never typed on your
-behalf, so the on-host steps have not run yet. Everything that could be built
-and checked without the host is done. The remaining acceptance items are one
-command on the host (`deploy/linux/setup.sh`) plus the checks in §6.
+behalf, so the on-host steps have not run yet.
 
 Fill in the **TBD** fields from `/srv/aerochorus/logs/inventory-*.json`,
-`/srv/aerochorus/crispasr/current/INSTALLED.json` and `aerochorus models
-qualifications --profile linux_pascal_8gb` after running it.
+`deploy.sh smoke`, and `aerochorus models qualifications --profile
+linux_pascal_8gb` after running it.
 
 ## 1. Detected hardware (on-host: TBD)
 
@@ -33,11 +37,17 @@ qualifications --profile linux_pascal_8gb` after running it.
 | asset SHA-256 (GitHub-published, verified on download) | `616298b500915608c48726eed6e4943f2ce5be368ae823e695142a6aa4cdc4b0` |
 | binary SHA-256 | `5f3d8953c72ed2e6267eaaa42d5d5d8d48187d7722f5b95f55a32333b6034a00` (from the verified tarball) |
 | build | CUDA toolkit 12.8.93, runtime ABI 12, **cuda archs `60-real,61-real,70-real,75-real,86-real,89-real,120-real,120-virtual`**: native Pascal (sm_61) kernels are included, so no source build is expected |
-| CUDA 12 runtime | `libcudart.so.12`, `libcublas.so.12` from NVIDIA wheels (`nvidia-cuda-runtime-cu12==12.8.*`, `nvidia-cublas-cu12==12.8.*`) in `/srv/aerochorus/cuda12` when the host has none |
+| CUDA 12 runtime | inside the `aerochorus-worker` image: `nvidia/cuda:12.8.1-base` (cudart) plus cuBLAS/cuBLASLt 12.8 only. The host needs just the driver (≥ 570, ≤ 580 branch) and the NVIDIA Container Toolkit. |
 | CUDA 13 required? | **No.** The installer refuses a cuda13 asset, and inventory flags compute capability < 7.5. |
 
-**Verified off-host (2026-09-27)** in an Ubuntu 24.04 container on the 5080
-box with the GPU passed through:
+**Verified off-host, containers (2026-09-27):** the `aerochorus-worker` image
+was built on the 5080 PC. The binary sha256 inside it matches the lock. With
+the GPU passed through (Docker Desktop, WSL2), `aerochorus worker crispasr
+check` loaded the **CUDA backend** and transcribed a real 17.6 s BWI tower
+segment from 2026-09-26 with Parakeet in 266 ms.
+
+**Verified off-host, native kit (earlier the same day)** in an Ubuntu 24.04
+container on the 5080 box with the GPU passed through:
 
 - `install-crispasr.sh` downloaded and SHA-256-verified the pinned tarball;
 - it installed the CUDA 12 runtime wheels and set `LD_LIBRARY_PATH`;
@@ -53,21 +63,25 @@ box with the GPU passed through:
 | --- | --- |
 | collector share | `//192.168.68.84/bwi` (unchanged; the collector is not modified) |
 | mount | `/mnt/aerochorus/atc`, CIFS `ro,nofail,_netdev,x-systemd.automount` (`deploy/linux/fstab.example`) |
-| read-only check | `setup.sh --phase mount`: `ro` option, write probe must be refused, one real segment read (TBD) |
+| read-only check | `host-setup.sh` step 6: `ro` in `/proc/mounts`, and a write probe must be refused; `deploy.sh smoke` checks the archive is readable inside the containers (TBD) |
 | identity | `(home_atc_archive, relative path)`; the mount path is only in `worker.toml` |
 
 ## 4. Storage and services
 
-`/srv/aerochorus/{postgres,models,artifacts,artifacts-jesseepc,exports,cache,context,corpora,logs,backups,crispasr,cuda12}`
+`/srv/aerochorus/{config,deploy,postgres,models,artifacts,artifacts-jesseepc,exports,cache,corpora,logs,backups}`
 
-| service | how | bind |
+All services belong to one Compose project (`deploy/linux/compose.yml`) with
+`restart: unless-stopped`. They run as the host operator, except
+PostgreSQL.
+
+| service | image | bind |
 | --- | --- | --- |
-| PostgreSQL 17 | Compose + `deploy/linux/compose.linux.yml`, data in `/srv/aerochorus/postgres` | 127.0.0.1:5432 |
-| API | Compose, restart unless-stopped | 127.0.0.1:8000 (LAN only if remote workers need it) |
-| web UI (review edge) | `aerochorus-edge.service` | 0.0.0.0:8080 → **LAN URL `http://<host-ip>:8080/review`** (TBD) |
-| worker + CrispASR | `aerochorus-worker.service` (native; one model resident at a time) | loopback |
-| backups | `aerochorus-backup.timer` (nightly pg_dump + critical files) | — |
-| adjudication runner (optional, paid) | `aerochorus-adjudicator.service`: installed, **not enabled**. It holds `AEROCHORUS_OPENROUTER_API_KEY` from `/etc/aerochorus/aerochorus.env` and works only on batches confirmed in the UI under a cost cap ([ADR-022](../adr/0022-model-adjudication.md)). | outbound HTTPS only |
+| `postgres` (PostgreSQL 17, data in `/srv/aerochorus/postgres`) | `postgres:17` | 127.0.0.1:5432 |
+| `api` | `aerochorus-app` | 127.0.0.1:8000 (LAN only if remote workers need it) |
+| `edge` (review web UI) | `aerochorus-app` | 0.0.0.0:8080 → **LAN URL `http://<host-ip>:8080/review`** (TBD) |
+| `worker` + CrispASR (GPU; one model resident at a time) | `aerochorus-worker` | — |
+| `backup` (nightly pg_dump + counts + config) | `postgres:17` | — |
+| `adjudicator` (optional, paid): **off** unless `AEROCHORUS_ADJUDICATOR=1`. It holds `AEROCHORUS_OPENROUTER_API_KEY` from `/srv/aerochorus/config/aerochorus.env` and works only on batches confirmed in the UI under a cost cap ([ADR-022](../adr/0022-model-adjudication.md)). | `aerochorus-app` | outbound HTTPS only |
 
 ## 5. Data migration
 
@@ -159,11 +173,11 @@ Not attempted, and why:
 | 2 | CrispASR runs CUDA on the GTX 1070 | TBD on host; the pinned build contains sm_61 and its CUDA backend loads (verified in a container) |
 | 3 | CUDA 13 not required | **done**: CUDA 12 asset pinned; cuda13 refused |
 | 4 | exact CrispASR version and hash recorded | **done** (above; `INSTALLED.json` on host) |
-| 5 | one CUDA backend transcribes a real segment | TBD (`setup.sh --phase smoke`: Whisper) |
+| 5 | one CUDA backend transcribes a real segment | TBD on the 1070 (`worker qualify --suite smoke-linux1070`); **done in the container on the 5080** (Parakeet, CUDA backend, real 09-26 segment) |
 | 6 | one CPU-only backend transcribes a real segment | TBD (smoke: Parakeet; `worker qualify` records `device`) |
 | 7 | web UI reachable from the Intel Mac | TBD (`http://<host>:8080/review`) |
-| 8 | DB/API/web/worker survive reboot | TBD (Compose restart policy + enabled units; reboot test in the runbook) |
-| 9 | source audio read over the network mount | TBD (`setup.sh --phase mount`, smoke) |
+| 8 | DB/API/web/worker survive reboot | TBD (Compose `restart: unless-stopped`, Docker enabled at boot; reboot test in the runbook §7) |
+| 9 | source audio read over the network mount | TBD (`host-setup.sh` step 6, `deploy.sh smoke`) |
 | 10 | mount loss does not corrupt or delete state | **done in tests** (`source_unavailable` scans; edge 503; sweeps release work) |
 | 11 | source audio cannot be modified through AeroChorus | **done**: ro mount, write probe, architecture tests, read-only reader |
 | 12 | killed model resumes correctly | **done in tests** (`test_hard_kill_is_recovered_by_the_same_worker`, `test_interrupted_run_resumes_only_missing_work`) |
@@ -177,23 +191,40 @@ Not attempted, and why:
 
 ## 9. Remaining risks
 
-- The driver version on the host is unknown. A driver older than CUDA 12.0
-  support needs an upgrade within the 5xx branch, capped at 580 for Pascal.
-- Frigate may hold the GPU or ports. Stop it first (runbook §0).
+- The driver version on the host is unknown. The worker image needs ≥ 570
+  (CUDA 12.8), and 580 is the last branch for Pascal. `host-setup.sh
+  --install-driver` installs 580.
+- Frigate may hold the GPU or ports. `host-setup.sh --stop-frigate` stops it.
 - CPU-path backends (Parakeet, Granite, …) may be `too_slow` at RTF > 1 on
   this CPU. The qualification RTF decides. The 5080 box can remain a worker
   for heavy models.
 - There is no authentication on the LAN UI. It must never be port-forwarded.
 - Backups need an off-host copy to protect against disk loss.
 - Adjudication sends selected audio to OpenRouter (Google). It is off until
-  the adjudicator unit is enabled. Each batch is confirmed and capped.
+  `AEROCHORUS_ADJUDICATOR=1`. Each batch is confirmed and capped.
+- The deploy bundle is about 2 GB per update, because base layers are copied
+  each time.
 
 ## 10. To finish on the host
 
+On the Windows PC:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\migrate\export-windows.ps1   # data
+powershell -ExecutionPolicy Bypass -File deploy\linux\package.ps1            # images + kit
+scp -r <bundle> <export> <user>@192.168.68.53:~/                              # or a USB disk
+```
+
+On the host:
+
 ```bash
-# once, from the Windows box, so these steps can be run for you:
-#   ssh-copy-id <user>@192.168.68.53      (or add a key you provide)
-cd ~/atctranscribe && deploy/linux/setup.sh
-uv run aerochorus worker qualify --suite qualify-linux1070 --n 20 --pull
-uv run aerochorus models qualifications --profile linux_pascal_8gb   # paste into §6
+cd ~/aerochorus-deploy-<tag>
+sudo bash host-setup.sh --stop-frigate
+bash deploy.sh up
+/srv/aerochorus/deploy/import.sh ~/<export stamp>
+aerochorus worker models pull --suite qualify-linux1070
+D=/srv/aerochorus/deploy/deploy.sh; $D compose stop worker
+$D compose run --rm worker aerochorus worker qualify --suite qualify-linux1070 --n 20 --seed 1 --pull
+$D compose start worker
+aerochorus models qualifications --profile linux_pascal_8gb   # paste into §6
 ```

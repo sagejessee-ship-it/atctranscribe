@@ -571,12 +571,14 @@ Ctrl-C: the active model run is released and resumes later.
 
 ## 10. Moving the control plane to the M1
 
-> **Superseded (2026-09-27, ADR-021).** The Mac is an Intel client with 8 GB
-> of RAM, not a server. The primary host is the Linux desktop with the GTX
-> 1070; see
+> **Superseded (2026-09-27, ADR-021, ADR-023).** The Mac is an Intel client
+> with 8 GB of RAM, not a server. The primary host is the Linux desktop with
+> the GTX 1070, which runs **containers only**, built on this PC and shipped
+> as a bundle. See
 > [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md)
-> and [deployment/MIGRATION.md](deployment/MIGRATION.md). The rest of this
-> section is kept for history.
+> and [deployment/MIGRATION.md](deployment/MIGRATION.md). §14 is the
+> pre-migration check on this PC. The rest of this section is kept for
+> history.
 
 The target layout: the **M1 runs the control plane and the archive worker**,
 and **this PC stays a GPU/benchmark worker** pointed at the M1. Nothing in
@@ -797,3 +799,137 @@ control plane's limits:
 Prices come from OpenRouter's public model list. If it is unreachable, the
 `AEROCHORUS_ADJUDICATION_PRICE_*` defaults are used.
 
+## 14. A full day on this PC (Windows, RTX 5080): the pre-migration check
+
+This runs everything end to end on the dev PC before the Linux move:
+transcribe one day, review it, look at ADS-B, and optionally adjudicate a
+few segments. Nothing here touches the Linux host.
+
+### 14.1 Start (each session)
+
+In PowerShell, from `C:\Users\sagej\Projects\atctranscribe`:
+
+```powershell
+docker compose up -d --build          # Postgres + API; picks up .env (OpenSky keys) and new code
+uv run aerochorus ui serve            # review UI → http://127.0.0.1:8080/review (leave this window open)
+```
+
+If `ui serve` is still running from an earlier session, stop it (Ctrl-C)
+and start it again after pulling new code. `docker compose up -d --build`
+also applies database migrations. After editing `.env`, recreate the API
+with `docker compose up -d --force-recreate api`.
+
+### 14.2 Make sure the day is indexed
+
+```powershell
+uv run aerochorus worker scan home_atc_archive --prefix 2026/09/26
+```
+
+This is an incremental scan of that day's directory, so it is cheap if
+nothing changed. The Review page's day filter then shows the segments.
+
+### 14.3 Queue the run
+
+On the **Transcribe** page (`http://127.0.0.1:8080/transcribe`):
+
+1. Portion: **One day**, then Day (archive folder) `2026-09-26`. Keep all
+   channels, and tick **only segments these models have not transcribed**.
+2. Models: **Voting models**, then untick `canary-1b-v2-q8_0`. It is the
+   same family as `canary-1b-v2-q8_0-beam4`, so it adds time but no
+   independent agreement. That leaves 6 models from 6 families.
+3. Tick **Allow models not yet qualified for full sweeps**. Qualification
+   is per hardware profile, so every model is "unqualified" until §8 or
+   the Linux qualification is run.
+4. The preview updates as you choose: segments, audio hours and estimated
+   minutes per model. Then click **Queue transcription run**.
+
+Estimated GPU time for 2026-09-26 (4,277 segments, 7.7 h of audio), from
+observed speed on this PC. Wall time with model loading and I/O has been
+about 1.7× these:
+
+| models | GPU estimate | expect |
+| --- | --- | --- |
+| parakeet, whisper-turbo, canary-beam4, qwen3 (`review-core`, as for 09-08) | 88 min | ~2.5 h |
+| + granite-speech, voxtral-mini (6 families) | 213 min | ~6 h |
+
+A quicker start is the four `review-core` models first. Later, queue a
+second run with just granite and voxtral: "only untranscribed" then covers
+exactly what those two are missing.
+
+The CLI equivalent:
+
+```powershell
+uv run aerochorus sweep create --suite review-core --source home_atc_archive --dir 2026/09/26 --name day-0926 --allow-unqualified
+```
+
+### 14.4 Run the worker
+
+```powershell
+uv run aerochorus worker transcribe     # works through queued runs, then exits
+```
+
+It runs one model at a time on the 5080, through the pinned CrispASR CUDA
+image. Progress and ETA show on the Transcribe page. While a model run is
+active, the worker keeps Windows from sleeping; the display may still turn
+off. Ctrl-C releases the current model run cleanly, and running the same
+command again resumes only the missing segments. `uv run aerochorus worker
+run` does the same continuously, with heartbeats and scans.
+
+### 14.5 Review
+
+Agreement is computed as results arrive. Useful starting points on the
+**Review** page, filtered to the day:
+
+- **2+ exact families, 3+ words**: independent agreement, without the
+  "thank you" noise. Listen, then `A` and `S`.
+- **Partial agreement (utterances)**: agreed stretches inside otherwise
+  disagreeing segments. `U` starts a span prefilled from the next one.
+- **Disagreement / needs review**: candidates for adjudication.
+
+### 14.6 ADS-B context and the map
+
+Open a segment, then **ADS-B context & map**. The map (runways, Class B/D
+airspace) shows without any fetch. **Fetch ADS-B context** adds traffic.
+
+Until OpenSky grants Trino access, fetches use the REST API client from
+`.env`:
+
+- **Coverage**: KBWI arrivals and departures only, with positions
+  interpolated from their tracks. Flights are published after a nightly
+  batch, so use days before today.
+- **Cost**: each REST call costs 30 of the account's daily credits.
+  AeroChorus caches each day's flight lists and each flight's track in the
+  API process, so browsing segments on the same day gets cheap after the
+  first fetch. The provenance line shows the credits left.
+- **Limit**: on 2026-09-27 the daily allowance ran out after about 18
+  calls. When it does, the panel says when the credits come back. Cached
+  snapshots keep working.
+
+Snapshots are cached per segment, so reopening a segment costs nothing.
+
+### 14.7 Optional: adjudicate a few segments (paid)
+
+Put `AEROCHORUS_OPENROUTER_API_KEY=…` in `.env`, then, in a second window:
+
+```powershell
+uv run aerochorus adjudicate run --follow
+```
+
+On the Review page, select a handful of disagreeing segments, then
+**Adjudicate…**. Check the price, tick the confirmation, and send. Results
+appear in the inspector ("Use as correction" / "Accept as silver") and on
+the **Adjudication** page. Start with 5–10 segments to see quality and
+actual cost.
+
+### 14.8 When it looks right: migrate
+
+1. Stop the worker and adjudicator (Ctrl-C), and let no run or batch be
+   active.
+2. Export the database ([deployment/MIGRATION.md](deployment/MIGRATION.md)
+   §1).
+3. Build the deploy bundle
+   (`powershell -ExecutionPolicy Bypass -File deploy\linux\package.ps1`).
+4. Follow
+   [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md):
+   copy the bundle, then `sudo bash host-setup.sh`, `bash deploy.sh up`,
+   and `import.sh`.

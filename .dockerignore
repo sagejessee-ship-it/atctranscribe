@@ -8,4 +8,9 @@ tests
 docs
 *.toml.local
 .env
-ui
+**/.env
+ui/node_modules
+ui/dist
+ui/test-results
+ui/playwright-report
+ui/.vite

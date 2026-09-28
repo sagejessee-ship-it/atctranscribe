@@ -274,8 +274,13 @@ class OpenSkyRest:
     active flight's ``/tracks/all`` waypoints, interpolated to the segment time.
     Limits: flights are published after a nightly batch (not for today), tracks
     only for the last 30 days, and only KBWI arrivals/departures are covered
-    (no overflights). Each fetch costs API credits (about 30 per call).
+    (no overflights). Every call costs 30 API credits (4 for the last 24 h), and
+    a standard account has 4000 per day. So calls are cached in memory: one
+    arrivals and one departures list per UTC day (a full day costs the same as
+    an hour), and one track per flight. Browsing a day's segments reuses them.
     """
+
+    CACHE_TTL_S = 6 * 3600
 
     name = "opensky-rest"
 
@@ -294,9 +299,25 @@ class OpenSkyRest:
         self.max_tracks = max_tracks
         self._http = http or httpx.Client(timeout=60.0)
         self._token: tuple[str, float] | None = None
+        self._cache: dict[tuple, tuple[float, Any]] = {}
+        self.calls = 0  # credit-bearing requests actually sent
+        self.credits_remaining: int | None = None
 
     def __repr__(self) -> str:
         return f"OpenSkyRest(client_id={self.client_id!r})"
+
+    def _cached(self, key: tuple, path: str, params: dict[str, Any]) -> tuple[Any, bool]:
+        """(response, from_cache). Empty answers are cached too: they cost the same."""
+        now = _time.time()
+        hit = self._cache.get(key)
+        if hit and now - hit[0] < self.CACHE_TTL_S:
+            return hit[1], True
+        value = self._get(path, params)
+        self._cache[key] = (now, value)
+        if len(self._cache) > 5000:  # bounded: drop the oldest entries
+            for stale in sorted(self._cache, key=lambda k: self._cache[k][0])[:1000]:
+                del self._cache[stale]
+        return value, False
 
     def _access_token(self) -> str:
         now = _time.time()
@@ -327,11 +348,19 @@ class OpenSkyRest:
             response = self._http.get(f"{REST_URL}{path}", params=params, headers=headers)
         except httpx.TransportError as exc:
             raise ProviderError(f"OpenSky REST unreachable: {type(exc).__name__}") from exc
+        self.calls += 1
+        remaining = response.headers.get("X-Rate-Limit-Remaining")
+        if remaining is not None and remaining.lstrip("-").isdigit():
+            self.credits_remaining = int(remaining)
         if response.status_code == 404:
             return []  # "no data for this interval"
         if response.status_code == 429:
-            retry = response.headers.get("X-Rate-Limit-Retry-After-Seconds", "?")
-            raise ProviderError(f"OpenSky REST credits exhausted (retry after {retry} s)")
+            retry = response.headers.get("X-Rate-Limit-Retry-After-Seconds", "")
+            when = f"about {int(retry) / 3600:.0f} h" if retry.isdigit() else "later"
+            raise ProviderError(
+                f"OpenSky REST daily API credits are used up (they come back in {when}); "
+                "cached snapshots still work"
+            )
         if response.status_code in (401, 403):
             raise ProviderUnavailable("OpenSky REST refused the API client")
         if response.status_code >= 400:
@@ -341,20 +370,21 @@ class OpenSkyRest:
     def fetch(self, query: AdsbQuery) -> ProviderResult:
         t = query.segment_utc
         started = _time.monotonic()
-        arrivals = (
-            self._get(
-                "/flights/arrival", {"airport": self.airport, "begin": t - 1800, "end": t + 3600}
-            )
-            or []
-        )
-        departures = (
-            self._get(
-                "/flights/departure", {"airport": self.airport, "begin": t - 3600, "end": t + 1800}
-            )
-            or []
-        )
+        calls_before, hits = self.calls, 0
+        flights_all = []
+        # Whole UTC days: the credit cost is per day partition, not per hour.
+        for day in sorted({(t - 3600) // 86400, (t + 3600) // 86400}):
+            begin, end = day * 86400, day * 86400 + 86399
+            for kind in ("arrival", "departure"):
+                listing, cached = self._cached(
+                    ("flights", kind, self.airport, day),
+                    f"/flights/{kind}",
+                    {"airport": self.airport, "begin": begin, "end": end},
+                )
+                hits += cached
+                flights_all += listing or []
         flights = {}
-        for flight in [*arrivals, *departures]:
+        for flight in flights_all:
             first, last = flight.get("firstSeen") or 0, flight.get("lastSeen") or 0
             if first - 600 <= t <= last + 600 and flight.get("icao24"):
                 flights[flight["icao24"]] = flight
@@ -368,7 +398,12 @@ class OpenSkyRest:
         rows: list[list[Any]] = []
         tracks = 0
         for flight in ranked:
-            track = self._get("/tracks/all", {"icao24": flight["icao24"], "time": t})
+            track, cached = self._cached(
+                ("track", flight["icao24"], flight.get("firstSeen")),
+                "/tracks/all",
+                {"icao24": flight["icao24"], "time": t},
+            )
+            hits += cached
             if not track or not track.get("path"):
                 continue
             tracks += 1
@@ -379,7 +414,9 @@ class OpenSkyRest:
             metadata={
                 "flights_seen": len(flights),
                 "tracks_fetched": tracks,
-                "requests": 2 + len(ranked),
+                "requests": self.calls - calls_before,
+                "cache_hits": hits,
+                "credits_remaining": self.credits_remaining,
                 "elapsed_s": round(_time.monotonic() - started, 2),
                 "coverage": f"{self.airport} arrivals/departures only; tracks <= 30 days old",
                 "interpolated": True,
@@ -387,14 +424,26 @@ class OpenSkyRest:
         )
 
 
+MAX_TRACK_GAP_S = 1800  # interpolating across a longer gap in a track is guesswork
+
+
+def _in_box(lat: float, lon: float, query: AdsbQuery) -> bool:
+    return query.lat_min <= lat <= query.lat_max and query.lon_min <= lon <= query.lon_max
+
+
 def _track_rows(track: dict[str, Any], flight: dict[str, Any], query: AdsbQuery) -> list[list]:
-    """Waypoints near the window (for trails) + one position interpolated at the segment time."""
+    """Waypoints near the window (for trails) + one position interpolated at the segment time.
+
+    Like the Trino query, only positions inside the query box count: tracks are
+    sparse, so a flight "active" by its first/last-seen times can be far away (or
+    between two distant waypoints) at the segment time.
+    """
     path = [p for p in track["path"] if p[1] is not None and p[2] is not None]
     callsign = (track.get("callsign") or flight.get("callsign") or "").strip() or None
     rows = []
     lo, hi = query.t_start - 240, query.t_end + 240
     for i, (time, lat, lon, alt, heading, ground) in enumerate(path):
-        if lo <= time <= hi and query.lat_min - 0.2 <= lat <= query.lat_max + 0.2:
+        if lo <= time <= hi and _in_box(lat, lon, query):
             speed = vrate = None
             if i + 1 < len(path) and path[i + 1][0] > time:
                 nxt = path[i + 1]
@@ -410,14 +459,16 @@ def _track_rows(track: dict[str, Any], flight: dict[str, Any], query: AdsbQuery)
     for (t0, la0, lo0, a0, h0, g0), (t1, la1, lo1, a1, _h1, _g1) in zip(
         path, path[1:], strict=False
     ):
-        if t0 <= t <= t1 and t1 > t0:
+        if t0 <= t <= t1 and 0 < t1 - t0 <= MAX_TRACK_GAP_S:
             f = (t - t0) / (t1 - t0)
+            lat, lon = la0 + f * (la1 - la0), lo0 + f * (lo1 - lo0)
+            if not _in_box(lat, lon, query):
+                break
             alt = a0 + f * (a1 - a0) if a0 is not None and a1 is not None else a0
             speed = _distance_nm(la0, lo0, la1, lo1) * 1852 / (t1 - t0)
             vrate = (a1 - a0) / (t1 - t0) if a0 is not None and a1 is not None else None
             rows.append(
-                [t, track["icao24"], callsign, la0 + f * (la1 - la0), lo0 + f * (lo1 - lo0), alt,
-                 None, speed, h0, vrate, g0, None, t]
+                [t, track["icao24"], callsign, lat, lon, alt, None, speed, h0, vrate, g0, None, t]
             )  # fmt: skip
             break
     return rows

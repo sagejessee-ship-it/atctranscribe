@@ -39,7 +39,7 @@ lease_seconds = 600
 pending_batch = 25
 auto_pull_models = false
 
-# --- Linux + GTX 1070: pinned CUDA 12 binary (deploy/linux/install-crispasr.sh, ADR-021) ---
+# --- Linux + GTX 1070: pinned CUDA 12 binary (deploy/linux/native/install-crispasr.sh, ADR-021; the Linux host uses containers, ADR-023) ---
 [transcription.crispasr]
 launcher = "native"
 binary = "/srv/aerochorus/crispasr/current/crispasr"
