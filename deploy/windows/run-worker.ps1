@@ -20,13 +20,19 @@ if (-not (Test-Path $exe)) { throw "not found: $exe (run 'uv sync' in $repo firs
 $logDir = Join-Path $env:USERPROFILE "aerochorus-data\logs"
 New-Item -ItemType Directory -Force $logDir | Out-Null
 
+# UTF-8 lines to the console and the log (Tee-Object would write UTF-16 in Windows PowerShell).
+function Write-Log([string]$Line, [string]$Path) {
+  Write-Host $Line
+  Add-Content -Path $Path -Value $Line -Encoding UTF8
+}
+
 while ($true) {
   $log = Join-Path $logDir ("worker-{0}.log" -f (Get-Date -Format "yyyyMMdd"))
   $started = Get-Date
-  "==== $($started.ToString('s')) starting aerochorus worker run" | Tee-Object -FilePath $log -Append
-  & $exe worker run --config $Config 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log -Append
+  Write-Log "==== $($started.ToString('s')) starting aerochorus worker run" $log
+  & $exe worker run --config $Config 2>&1 | ForEach-Object { Write-Log "$_" $log }
   $code = $LASTEXITCODE
-  "==== $((Get-Date).ToString('s')) worker exited (code $code) after $([int]((Get-Date) - $started).TotalMinutes) min; restarting in $RestartDelaySeconds s (Ctrl-C to stop)" |
-    Tee-Object -FilePath $log -Append
+  Write-Log ("==== $((Get-Date).ToString('s')) worker exited (code $code) after " +
+    "$([int]((Get-Date) - $started).TotalMinutes) min; restarting in $RestartDelaySeconds s (Ctrl-C to stop)") $log
   Start-Sleep -Seconds $RestartDelaySeconds
 }

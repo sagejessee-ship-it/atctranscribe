@@ -1665,3 +1665,8 @@ a {
   margin-top: var(--space-3);
   font-size: var(--text-sm);
 }
+
+.runs__fresh {
+  font-size: var(--text-sm);
+  padding: 0 var(--space-3);
+}

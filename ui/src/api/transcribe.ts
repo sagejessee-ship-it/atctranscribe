@@ -78,6 +78,12 @@ export interface SweepModelRead {
   last_error: string | null;
   started_at: string | null;
   completed_at: string | null;
+  /** spoken + empty + error */
+  processed?: number;
+  last_result_at?: string | null;
+  recent_per_min?: number | null;
+  stalled?: boolean;
+  eta_seconds?: number | null;
 }
 
 export interface SweepRead {
@@ -91,6 +97,8 @@ export interface SweepRead {
   started_at: string | null;
   completed_at: string | null;
   models: SweepModelRead[];
+  eta_seconds?: number | null;
+  eta_partial?: boolean;
 }
 
 export interface WorkerRead {

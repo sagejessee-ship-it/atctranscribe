@@ -555,3 +555,43 @@ def test_selections_beyond_the_bind_parameter_limit(api, http, db, lab):
         f"/api/v1/sweep-models/{srm_id}/pending", params={"limit": 2, "after_ordinal": 50_000}
     ).json()
     assert [s["ordinal"] for s in later["segments"]] == [50_001, 50_002]
+
+
+def test_run_health_progress_and_estimates(api, db, lab, monkeypatch, caplog):
+    import logging
+
+    from sqlalchemy import text
+
+    from aerochorus.worker import transcriber
+
+    monkeypatch.setattr(transcriber, "PROGRESS_EVERY_S", 0.0)  # log progress on every result
+    finished = new_sweep(api)  # the whole test corpus: enough audio for a speed history
+    with caplog.at_level(logging.INFO, logger="aerochorus.worker.transcriber"):
+        sweeper(api, lab, FakeLauncher()).run_until_idle()
+    assert "segments/s" in caplog.text and "left for this model" in caplog.text
+
+    done = api.get_sweep(finished.id)
+    # Processed counts spoken, empty and errors alike; a finished run has no estimate.
+    assert all(m.processed == m.segments_total for m in done.models)
+    assert done.eta_seconds is None
+
+    queued = api.get_sweep(new_sweep(api).id)  # the whole corpus, not started
+    assert all(m.eta_seconds is not None for m in queued.models)  # from the finished run
+    assert queued.eta_seconds == pytest.approx(sum(m.eta_seconds for m in queued.models), abs=2)
+    assert not queued.eta_partial
+
+    # A running model run that has recorded nothing for 20 minutes is flagged.
+    srm = queued.models[0]
+    db.execute(text("UPDATE sweep_run SET status = 'running' WHERE id = :id"), {"id": queued.id})
+    db.execute(
+        text(
+            "UPDATE sweep_run_model SET status = 'running', attempts = 1, "
+            "started_at = now() - interval '20 minutes', "
+            "lease_expires_at = now() + interval '5 minutes' WHERE id = :id"
+        ),
+        {"id": srm.id},
+    )
+    db.commit()
+    running = api.get_sweep(queued.id).models[0]
+    assert running.stalled and running.last_result_at is None
+    assert running.recent_per_min == 0

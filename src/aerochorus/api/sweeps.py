@@ -552,12 +552,99 @@ def _rtf(srm: SweepRunModel) -> float | None:
     return round(srm.inference_ms_total / srm.audio_ms_total, 4)
 
 
-def sweep_read(session: Session, run: SweepRun) -> SweepRead:
-    srms = session.scalars(
-        select(SweepRunModel)
-        .where(SweepRunModel.run_id == run.id)
-        .order_by(SweepRunModel.execution_order)
+STALL_AFTER = timedelta(minutes=10)
+OPEN_MODEL_RUNS = (
+    ModelRunStatus.QUEUED,
+    ModelRunStatus.LOADING,
+    ModelRunStatus.RUNNING,
+    ModelRunStatus.RETRYING,
+)
+_selection_audio: dict[int, int] = {}  # run id -> selected audio ms (a run's selection is fixed)
+
+
+def _selected_audio_ms(session: Session, run_id: int) -> int:
+    if run_id not in _selection_audio:
+        _selection_audio[run_id] = int(
+            session.scalar(
+                select(func.coalesce(func.sum(Segment.duration_ms), 0))
+                .select_from(SweepRunSegment)
+                .join(Segment, Segment.id == SweepRunSegment.segment_id)
+                .where(SweepRunSegment.run_id == run_id)
+            )
+        )
+    return _selection_audio[run_id]
+
+
+def _wall_per_audio(session: Session) -> dict[int, float]:
+    """Model id -> wall seconds per audio second, from finished model runs."""
+    wall = func.extract("epoch", SweepRunModel.completed_at - SweepRunModel.started_at)
+    rows = session.execute(
+        select(SweepRunModel.model_id, func.sum(wall), func.sum(SweepRunModel.audio_ms_total))
+        .where(
+            SweepRunModel.status == ModelRunStatus.COMPLETED,
+            SweepRunModel.started_at.is_not(None),
+            SweepRunModel.completed_at.is_not(None),
+            SweepRunModel.audio_ms_total > 10_000,
+        )
+        .group_by(SweepRunModel.model_id)
     )
+    return {mid: float(w) / (float(a) / 1000) for mid, w, a in rows if w and a}
+
+
+def _health(session: Session, s: SweepRunModel, now: datetime) -> dict[str, Any]:
+    if s.status not in (ModelRunStatus.RUNNING, ModelRunStatus.LOADING):
+        return {}
+    last = session.scalar(
+        select(func.max(TranscriptionResult.created_at)).where(
+            TranscriptionResult.sweep_run_model_id == s.id
+        )
+    )
+    recent = session.scalar(
+        select(func.count()).where(
+            TranscriptionResult.sweep_run_model_id == s.id,
+            TranscriptionResult.created_at > now - timedelta(minutes=10),
+        )
+    )
+    since = last or s.started_at
+    stalled = s.status == ModelRunStatus.RUNNING and (
+        (since is not None and now - since > STALL_AFTER)
+        or (s.lease_expires_at is not None and s.lease_expires_at < now)
+    )
+    return {"last_result_at": last, "recent_per_min": round(recent / 10, 1), "stalled": stalled}
+
+
+def _eta_seconds(
+    session: Session, s: SweepRunModel, history: dict[int, float], now: datetime
+) -> float | None:
+    if s.status not in OPEN_MODEL_RUNS:
+        return None
+    processed = s.segments_completed + s.segments_abstained + s.segments_error
+    remaining_audio_s = max(_selected_audio_ms(session, s.run_id) - s.audio_ms_total, 0) / 1000
+    if s.status == ModelRunStatus.RUNNING and s.started_at and processed >= 200:
+        rate = (now - s.started_at).total_seconds() / max(s.audio_ms_total / 1000, 1)
+        return remaining_audio_s * rate
+    if s.model_id in history:
+        return remaining_audio_s * history[s.model_id] + 30  # + loading the model
+    return None
+
+
+def sweep_read(
+    session: Session, run: SweepRun, history: dict[int, float] | None = None
+) -> SweepRead:
+    srms = list(
+        session.scalars(
+            select(SweepRunModel)
+            .where(SweepRunModel.run_id == run.id)
+            .order_by(SweepRunModel.execution_order)
+        )
+    )
+    now = utcnow()
+    live = run.status in (SweepStatus.QUEUED, SweepStatus.RUNNING, SweepStatus.PAUSED)
+    if live and history is None:
+        history = _wall_per_audio(session)
+    etas = {s.id: _eta_seconds(session, s, history, now) if live else None for s in srms}
+    open_runs = [s for s in srms if s.status in OPEN_MODEL_RUNS] if live else []
+    known = [etas[s.id] for s in open_runs if etas[s.id] is not None]
     return SweepRead(
         id=run.id,
         name=run.name,
@@ -589,9 +676,14 @@ def sweep_read(session: Session, run: SweepRun) -> SweepRead:
                 last_error=s.last_error,
                 started_at=s.started_at,
                 completed_at=s.completed_at,
+                processed=s.segments_completed + s.segments_abstained + s.segments_error,
+                eta_seconds=round(etas[s.id]) if etas[s.id] is not None else None,
+                **_health(session, s, now),
             )
             for s in srms
         ],
+        eta_seconds=round(sum(known)) if known else None,
+        eta_partial=len(known) < len(open_runs),
     )
 
 

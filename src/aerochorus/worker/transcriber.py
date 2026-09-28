@@ -63,6 +63,8 @@ MAX_RESTARTS = 3
 # tried as the smoke test; after this many the backend is judged broken and the model
 # run fails without recording any results.
 MAX_SMOKE_SEGMENTS = 3
+# A progress line in the log this often, so a long model run visibly moves.
+PROGRESS_EVERY_S = 300.0
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -333,9 +335,28 @@ class SweepWorker:
         held: list[ResultPost] = []
         held_ids: set[int] = set()
 
+        progress = {"at": time.monotonic(), "processed": 0, "errors": 0}
+
         def post(result: ResultPost) -> None:
-            self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
+            ack = self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
             outcome.processed += 1
+            progress["errors"] += result.status == ResultStatus.ERROR
+            now = time.monotonic()
+            if now - progress["at"] >= PROGRESS_EVERY_S:
+                rate = (outcome.processed - progress["processed"]) / (now - progress["at"])
+                left = ack.segments_total - ack.segments_recorded
+                log.info(
+                    "%s (sweep %s): %s/%s done, %.2f segments/s, %s errors so far, "
+                    "~%.1f h left for this model",
+                    claim.model.logical_name,
+                    claim.sweep_id,
+                    f"{ack.segments_recorded:,}",
+                    f"{ack.segments_total:,}",
+                    rate,
+                    progress["errors"],
+                    left / rate / 3600 if rate else float("nan"),
+                )
+                progress["at"], progress["processed"] = now, outcome.processed
 
         def recover(segment: PendingSegment, result: ResultPost) -> Server:
             nonlocal restarts, smoke_done

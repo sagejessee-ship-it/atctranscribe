@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { Pause, Play, RotateCw, Square } from "lucide-react";
 
 import { api } from "../api/client";
-import { runs, type ModelRead, type SweepCreate, type SweepRead, type WorkerRead } from "../api/transcribe";
+import { runs, type ModelRead, type SweepCreate, type SweepModelRead, type SweepRead, type WorkerRead } from "../api/transcribe";
 import { Badge } from "../components/badges";
 import { ModelVoting } from "./ModelVoting";
 import { Button, ErrorBox, IconButton, Section } from "../components/ui";
@@ -368,17 +368,45 @@ function NewRun() {
   );
 }
 
+const processedOf = (m: SweepModelRead) =>
+  m.processed ?? m.segments_completed + m.segments_abstained + m.segments_error;
+
 function progressOf(run: SweepRead) {
   const total = run.models.reduce((n, m) => n + m.segments_total, 0);
-  const done = run.models.reduce((n, m) => n + m.segments_completed, 0);
-  // Remaining time from the observed rate of this run (segments per ms of wall time).
-  const active = run.models.filter((m) => m.started_at);
-  const elapsed = active.reduce(
-    (n, m) => n + ((m.completed_at ? Date.parse(m.completed_at) : Date.now()) - Date.parse(m.started_at!)),
-    0,
-  );
-  const eta = done > 0 && elapsed > 0 && done < total ? ((total - done) * elapsed) / done / 60000 : null;
-  return { total, done, pct: total ? (100 * done) / total : 0, eta };
+  // Done means processed: spoken, empty (no speech) and errors all count.
+  const done = run.models.reduce((n, m) => n + processedOf(m), 0);
+  // Remaining time from the server: each model's measured speed on this run, else history.
+  const eta = run.eta_seconds != null ? run.eta_seconds / 60 : null;
+  return { total, done, pct: total ? (100 * done) / total : 0, eta, partial: !!run.eta_partial };
+}
+
+function ago(iso: string | null | undefined): string {
+  if (!iso) return "never";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`;
+}
+
+/** Live health of one model run: rate, last result, stall warning, time left. */
+function ModelHealth({ m }: { m: SweepModelRead }) {
+  if (m.stalled) {
+    return (
+      <Badge tone="danger" title="no result recorded for 10+ minutes, or the worker's lease ran out">
+        stalled: last result {ago(m.last_result_at)}
+      </Badge>
+    );
+  }
+  if (m.status === "running" || m.status === "loading") {
+    return (
+      <span className="muted num" title="results recorded in the last 10 minutes; time of the latest">
+        {m.recent_per_min != null ? `${(m.recent_per_min / 60).toFixed(1)}/s` : ""} · last result {ago(m.last_result_at)}
+        {m.eta_seconds != null ? ` · ~${minutes(m.eta_seconds / 60)} left` : ""}
+      </span>
+    );
+  }
+  if (m.eta_seconds != null && ["queued", "retrying"].includes(m.status)) {
+    return <span className="muted num">~{minutes(m.eta_seconds / 60)} when it runs</span>;
+  }
+  return null;
 }
 
 function RunRow({ run }: { run: SweepRead }) {
@@ -387,7 +415,7 @@ function RunRow({ run }: { run: SweepRead }) {
     mutationFn: (action: "pause" | "resume" | "cancel" | "retry") => runs.control(run.id, action),
     onSuccess: () => client.invalidateQueries({ queryKey: ["sweeps"] }),
   });
-  const { total, done, pct, eta } = progressOf(run);
+  const { total, done, pct, eta, partial } = progressOf(run);
   const live = ["queued", "running", "paused"].includes(run.status);
   const failed = run.models.some((m) => m.status === "failed");
   const sel = run.selection;
@@ -411,7 +439,8 @@ function RunRow({ run }: { run: SweepRead }) {
           <div className="bar__fill" style={{ width: `${pct}%` }} />
         </div>
         <span className="num muted">
-          {fmtCount(done)} / {fmtCount(total)} ({pct.toFixed(0)}%){eta != null && live ? ` · ~${minutes(eta)} left` : ""}
+          {fmtCount(done)} / {fmtCount(total)} ({pct.toFixed(0)}%)
+          {eta != null && live ? ` · ~${minutes(eta)} left${partial ? " (+ models without speed history)" : ""}` : ""}
         </span>
         <ul className="runs__models">
           {run.models.map((m) => (
@@ -419,12 +448,13 @@ function RunRow({ run }: { run: SweepRead }) {
               <span className="num">{m.logical_name}</span>{" "}
               <Badge tone={STATUS_TONE[m.status] ?? "neutral"}>{m.status}</Badge>{" "}
               <span className="num muted">
-                {m.segments_completed}/{m.segments_total}
-                {m.segments_error ? ` · ${m.segments_error} err` : ""}
-                {m.segments_abstained ? ` · ${m.segments_abstained} empty` : ""}
+                {fmtCount(processedOf(m))}/{fmtCount(m.segments_total)}
+                {m.segments_error ? ` · ${fmtCount(m.segments_error)} err` : ""}
+                {m.segments_abstained ? ` · ${fmtCount(m.segments_abstained)} empty` : ""}
                 {m.real_time_factor != null ? ` · RTF ${m.real_time_factor.toFixed(3)}` : ""}
                 {m.claimed_by && ["loading", "running"].includes(m.status) ? ` · on ${m.claimed_by}` : ""}
-              </span>
+              </span>{" "}
+              <ModelHealth m={m} />
             </li>
           ))}
         </ul>
@@ -495,6 +525,22 @@ function Workers({ workers }: { workers: WorkerRead[] }) {
   );
 }
 
+/** When the runs were last fetched: a page left in a background tab stops refreshing. */
+function Freshness({ at, fetching }: { at: number; fetching: boolean }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  if (!at) return <span className="muted">loading…</span>;
+  const s = Math.round((Date.now() - at) / 1000);
+  return (
+    <span className={s > 30 ? "note note--warn runs__fresh" : "muted runs__fresh"} title="refreshes every few seconds while this tab is visible">
+      {fetching ? "refreshing…" : `updated ${s < 90 ? `${s} s` : `${Math.round(s / 60)} min`} ago`}
+    </span>
+  );
+}
+
 /** Select a portion of the archive, choose models, queue a run, watch progress. */
 export function TranscribePage() {
   const sweeps = useQuery({
@@ -512,7 +558,7 @@ export function TranscribePage() {
       <div className="transcribe">
         <NewRun />
         <div>
-          <Section title="Runs" id="runs" aside={<span className="muted">refreshes automatically</span>}>
+          <Section title="Runs" id="runs" aside={<Freshness at={sweeps.dataUpdatedAt} fetching={sweeps.isFetching} />}>
             {sweeps.error ? <ErrorBox title="Runs unavailable" detail={(sweeps.error as Error).message} /> : null}
             <table className="mini-table runs">
               <caption className="sr-only">Transcription runs</caption>
