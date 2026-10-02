@@ -6,7 +6,9 @@ production), next to the worker, with the worker's config. It serves:
 * the built review UI (``ui/dist``) with SPA fallback;
 * ``/api/*``, proxied to the control plane, so the browser has one origin;
 * ``/audio/{segment_id}``: source audio, read through ``ReadOnlyCorpusReader``,
-  checked against the indexed sha256, with HTTP Range support for seeking.
+  checked against the indexed sha256, with HTTP Range support for seeking;
+* ``/edge/test-pack``: a zip of selected segments' audio with a chat-ready
+  adjudication prompt each, for small manual experiments (built in memory).
 
 Like the worker it never imports the database layer; the control plane stays
 the only database writer, and the container never needs the corpus mounted.
@@ -15,17 +17,22 @@ Audio bytes are never modified, transcoded or cached on disk.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import logging
 import os
 import re
+import zipfile
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from pathlib import Path
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from aerochorus import __version__
@@ -56,6 +63,34 @@ HOP_BY_HOP = {
     "content-encoding",
 }
 RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+TEST_PACK_MAX = 200
+
+PACK_README = """\
+AeroChorus test pack: {count} segment(s), made {made} UTC.
+
+For each segment there are three files:
+  NNN_<id>_<original name>.mp3   the source audio, byte for byte (sha256 checked)
+  NNN_<id>_prompt.txt            a short prompt for a chat UI: paste it, attach the audio
+  NNN_<id>_full-prompt.txt       the instructions and context exactly as AeroChorus's
+                                 automated adjudicator sends them (prompt version {version})
+
+The prompts include each segment's machine transcripts, the airport, and the ADS-B
+traffic if it was fetched for that segment. manifest.csv lists every segment.
+"""
+
+
+class TestPackRequest(BaseModel):
+    segment_ids: list[int] = Field(min_length=1, max_length=TEST_PACK_MAX)
+
+
+def _zip(entries: list[tuple[str, bytes]]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as pack:
+        for name, data in entries:
+            # Audio is already compressed: store it; deflate the text.
+            kind = zipfile.ZIP_DEFLATED if name.endswith((".txt", ".csv")) else zipfile.ZIP_STORED
+            pack.writestr(name, data, compress_type=kind)
+    return buffer.getvalue()
 
 
 def default_static_dir() -> Path | None:
@@ -207,6 +242,69 @@ def create_edge_app(
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         return Response(
             data[start : end + 1], status_code=206, media_type=media_type, headers=headers
+        )
+
+    @app.post("/edge/test-pack")
+    async def test_pack(body: TestPackRequest) -> Response:
+        """Selected segments' audio + adjudication prompts as one zip (manual experiments)."""
+        ids = list(dict.fromkeys(body.segment_ids))
+        entries: list[tuple[str, bytes]] = []
+        rows: list[list[str]] = []
+        skipped: list[str] = []
+        version = "?"
+        for n, segment_id in enumerate(ids, 1):
+            try:
+                data, digest, _ = await _load(segment_id)
+            except HTTPException as exc:
+                skipped.append(f"segment {segment_id}: {exc.detail}")
+                continue
+            try:
+                response = await client.get(f"/api/v1/segments/{segment_id}/adjudication-context")
+            except httpx.TransportError as exc:
+                raise HTTPException(502, f"control plane unreachable at {api_url}: {exc}") from exc
+            if response.status_code != 200:
+                skipped.append(f"segment {segment_id}: no prompt context ({response.status_code})")
+                continue
+            ctx = response.json()
+            version = ctx["prompt_version"]
+            stem = f"{n:03d}_{segment_id}"
+            audio_name = f"{stem}_{PurePosixPath(ctx['relative_path']).name}"
+            prompt = f"[Attach {audio_name}]\n\n{ctx['chat_prompt']}\n"
+            full = f"{ctx['system_prompt']}\n\n----- context -----\n\n{ctx['context_text']}\n"
+            entries += [
+                (audio_name, data),
+                (f"{stem}_prompt.txt", prompt.encode()),
+                (f"{stem}_full-prompt.txt", full.encode()),
+            ]
+            rows.append([str(segment_id), audio_name, ctx["relative_path"], digest])
+        if not rows:
+            raise HTTPException(
+                503, "none of the selected segments could be packed: " + "; ".join(skipped)
+            )
+        made = datetime.now(UTC)
+        manifest = io.StringIO()
+        writer = csv.writer(manifest, lineterminator="\n")
+        writer.writerow(["segment_id", "audio_file", "source_path", "audio_sha256"])
+        writer.writerows(rows)
+        readme = PACK_README.format(
+            count=len(rows), made=made.strftime("%Y-%m-%d %H:%M"), version=version
+        )
+        if skipped:
+            readme += "\nNot included:\n" + "\n".join(f"  {line}" for line in skipped) + "\n"
+        entries += [("README.txt", readme.encode()), ("manifest.csv", manifest.getvalue().encode())]
+        content = await run_in_threadpool(_zip, entries)
+        name = f"aerochorus-test-pack-{len(rows)}-segments-{made.strftime('%Y%m%d-%H%M%S')}.zip"
+        return Response(
+            content,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{name}"',
+                "X-Pack-Segments": str(len(rows)),
+                "X-Pack-Skipped": str(len(skipped)),
+                "Access-Control-Expose-Headers": (
+                    "Content-Disposition, X-Pack-Segments, X-Pack-Skipped"
+                ),
+            },
         )
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

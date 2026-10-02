@@ -82,6 +82,50 @@ export const api = {
 
 export const audioUrl = (segmentId: number) => `/audio/${segmentId}`;
 
+export const TEST_PACK_MAX = 200;
+
+/**
+ * Selected segments' audio + chat-ready adjudication prompts as one zip, built by the
+ * edge server (which reads the audio), saved through the browser's normal download.
+ */
+export async function downloadTestPack(segmentIds: number[]): Promise<{ filename: string; segments: number; skipped: number }> {
+  let response: Response;
+  try {
+    response = await fetch("/edge/test-pack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ segment_ids: segmentIds }),
+    });
+  } catch (error) {
+    throw new ApiError(0, `AeroChorus server unreachable (${(error as Error).message})`);
+  }
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      detail = describe((await response.json()).detail);
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(response.status, detail);
+  }
+  const blob = await response.blob();
+  const match = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "");
+  const filename = match?.[1] ?? "aerochorus-test-pack.zip";
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return {
+    filename,
+    segments: Number(response.headers.get("X-Pack-Segments") ?? segmentIds.length),
+    skipped: Number(response.headers.get("X-Pack-Skipped") ?? 0),
+  };
+}
+
 /** Fetch the edge server's explanation when an <audio> element fails to load. */
 export async function audioProblem(segmentId: number): Promise<string> {
   try {
