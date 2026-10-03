@@ -38,6 +38,10 @@ artifact_store = "linux1070"
 lease_seconds = 600
 pending_batch = 25
 auto_pull_models = false
+# Two models at once on one GPU (`worker run`): the second starts only when its
+# estimated footprint fits in free GPU memory minus the headroom (a game counts too).
+# max_concurrent_models = 2
+# vram_headroom_mb = 1500
 
 # --- Linux + GTX 1070: pinned CUDA 12 binary (deploy/linux/native/install-crispasr.sh, ADR-021; the Linux host uses containers, ADR-023) ---
 [transcription.crispasr]

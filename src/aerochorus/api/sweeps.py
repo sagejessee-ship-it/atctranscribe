@@ -697,15 +697,58 @@ def request_params(run: SweepRun, model: Model) -> dict[str, str]:
 # --- worker protocol --------------------------------------------------------------------
 
 
+def estimated_vram_mb(model: Model, metrics: dict[str, Any] | None) -> int:
+    """GPU memory one CrispASR server with this model needs, including inference peaks.
+
+    Measured by qualification on the profile when available (peak minus what was in use
+    before), else from the artifact size plus room for activations and a CUDA context.
+    """
+    if metrics:
+        peak, before = metrics.get("vram_peak_mb"), metrics.get("vram_before_mb")
+        if peak and before is not None and peak > before:
+            return int(peak - before + 200)
+        if metrics.get("vram_model_mb"):
+            return int(metrics["vram_model_mb"] * 1.25 + 200)
+    return int((model.artifact_size_bytes or 0) / 2**20 * 1.3 + 700)
+
+
+def _models_fitting(session: Session, max_vram_mb: int, hardware_profile: str | None) -> list[int]:
+    measured = {}
+    if hardware_profile:
+        measured = dict(
+            session.execute(
+                select(
+                    ModelPlatformQualification.model_id, ModelPlatformQualification.metrics
+                ).where(ModelPlatformQualification.hardware_profile == hardware_profile)
+            ).all()
+        )
+    return [
+        m.id
+        for m in session.scalars(select(Model))
+        if estimated_vram_mb(m, measured.get(m.id)) <= max_vram_mb
+    ]
+
+
 def claim(
     session: Session,
     worker: Worker,
     lease_seconds: int,
     source_keys: list[str] | None = None,
     hardware_profile: str | None = None,
+    exclude_model_runs: list[int] | None = None,
+    max_vram_mb: int | None = None,
 ) -> SweepRunModel | None:
     now = utcnow()
     query = select(SweepRunModel).join(SweepRun, SweepRun.id == SweepRunModel.run_id)
+    if exclude_model_runs:
+        # Held by another slot of this worker: never a second copy of the same run.
+        query = query.where(SweepRunModel.id.not_in(exclude_model_runs))
+    if max_vram_mb is not None:
+        query = query.where(
+            SweepRunModel.model_id.in_(
+                _models_fitting(session, max_vram_mb, hardware_profile) or [-1]
+            )
+        )
     if source_keys is not None:
         query = query.where(SweepRun.selection_definition["source_key"].astext.in_(source_keys))
     if hardware_profile:

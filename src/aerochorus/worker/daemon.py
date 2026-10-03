@@ -37,6 +37,23 @@ def _heartbeat_loop(
             stop.wait(config.heartbeat_interval_seconds)
 
 
+def _extra_slot(config, stop, client_factory, slot, registry) -> None:
+    """Another model at the same time, when the GPU has room (max_concurrent_models)."""
+    from aerochorus.worker.transcriber import SweepWorker
+
+    with client_factory(config) as client:
+        sweeper = SweepWorker(client, config, stop=stop, slot=slot, registry=registry)
+        while not stop.is_set():
+            try:
+                if sweeper.process_next() is not None:
+                    continue
+            except (ApiError, ApiUnreachable) as exc:
+                log.warning("slot %s paused: %s", slot, exc)
+            except Exception:
+                log.exception("slot %s crashed", slot)
+            stop.wait(30.0)  # re-check GPU memory and the queue now and then
+
+
 def run(
     config: WorkerConfig,
     stop: threading.Event | None = None,
@@ -60,10 +77,19 @@ def run(
         scanner = CorpusScanner(client, config)
         sweeper = None
         if config.transcription is not None and config.process_sweeps:
-            from aerochorus.worker.transcriber import SweepWorker
+            from aerochorus.worker.transcriber import SlotRegistry, SweepWorker
 
-            sweeper = SweepWorker(client, config, stop=stop)
+            registry = SlotRegistry()
+            sweeper = SweepWorker(client, config, stop=stop, registry=registry)
             log.info("processing queued sweeps with %s", config.transcription.crispasr.launcher)
+            for slot in range(1, config.transcription.max_concurrent_models):
+                threading.Thread(
+                    target=_extra_slot,
+                    args=(config, stop, client_factory, slot, registry),
+                    name=f"sweep-slot-{slot}",
+                    daemon=True,
+                ).start()
+                log.info("slot %s: may run a second model when GPU memory allows", slot)
         while not stop.is_set():
             for key in auto:
                 now = time.monotonic()

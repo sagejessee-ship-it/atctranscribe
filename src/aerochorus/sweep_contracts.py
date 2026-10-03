@@ -404,6 +404,11 @@ class ClaimRequest(BaseModel):
     source_keys: list[str] | None = None
     # Models recorded as blocked on this profile (oom, unsupported...) are skipped.
     hardware_profile: str | None = None
+    # Concurrent slots on one worker: model runs the worker's other slots hold (never
+    # handed to this slot), and the GPU memory this slot may use (only models whose
+    # estimated footprint fits are offered).
+    exclude_model_runs: list[int] = Field(default_factory=list)
+    max_vram_mb: int | None = Field(default=None, ge=0)
 
 
 class ModelRunClaim(BaseModel):

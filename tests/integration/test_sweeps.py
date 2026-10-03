@@ -595,3 +595,87 @@ def test_run_health_progress_and_estimates(api, db, lab, monkeypatch, caplog):
     running = api.get_sweep(queued.id).models[0]
     assert running.stalled and running.last_result_at is None
     assert running.recent_per_min == 0
+
+
+def test_vram_estimates_prefer_measurements():
+    from types import SimpleNamespace
+
+    from aerochorus.api.sweeps import estimated_vram_mb
+
+    model = SimpleNamespace(artifact_size_bytes=1000 * 2**20)  # a 1000 MiB model file
+    assert estimated_vram_mb(model, None) == 2000  # 1000 * 1.3 + 700
+    measured = {"vram_peak_mb": 4776, "vram_before_mb": 3221, "vram_model_mb": 1326}
+    assert estimated_vram_mb(model, measured) == 4776 - 3221 + 200
+    assert estimated_vram_mb(model, {"vram_model_mb": 1326}) == int(1326 * 1.25 + 200)
+
+
+def test_claims_for_a_second_slot_exclude_held_runs_and_respect_gpu_memory(api, lab):
+    from aerochorus.sweep_contracts import ClaimRequest
+
+    sweep = new_sweep(api)
+    worker = sweeper(api, lab, FakeLauncher())
+    worker.run_until_idle(max_model_runs=0)  # sends the heartbeat that registers the worker
+    base = {"worker_name": "test-worker", "lease_seconds": 600}
+    first = api.claim_model_run(ClaimRequest(**base))
+    assert first.model.logical_name == "alpha-model"
+    # The same worker asking again would normally get its own run back (crash recovery);
+    # a second slot excludes it and gets the next model instead.
+    second = api.claim_model_run(ClaimRequest(**base, exclude_model_runs=[first.sweep_model_id]))
+    assert second.model.logical_name == "beta-model"
+    # Only models whose estimated footprint fits are offered (the fake models need ~700 MB).
+    both = [first.sweep_model_id, second.sweep_model_id]
+    assert api.claim_model_run(ClaimRequest(**base, exclude_model_runs=both)) is None
+    assert (
+        api.claim_model_run(
+            ClaimRequest(**base, exclude_model_runs=[first.sweep_model_id], max_vram_mb=500)
+        )
+        is None
+    )
+    assert api.get_sweep(sweep.id).status == "running"
+
+
+def test_two_slots_transcribe_two_models_at_once(api, db, lab, monkeypatch):
+    import threading
+    import time
+
+    from aerochorus.worker import hardware
+    from aerochorus.worker.transcriber import SlotRegistry
+
+    monkeypatch.setattr(hardware, "gpu_memory_free_mb", lambda index=0: 12_000)
+    overlap = threading.Event()
+    active: set[str] = set()
+    lock = threading.Lock()
+
+    def slow(filename, params, server):
+        with lock:
+            active.add(server.backend)
+            if len(active) == 2:
+                overlap.set()
+        time.sleep(0.05)
+        with lock:
+            active.discard(server.backend)
+        return default_script(filename, params, server)
+
+    sweep = new_sweep(api)
+    registry = SlotRegistry()
+    first = sweeper(api, lab, FakeLauncher(script=slow))
+    first.registry = registry
+    first.run_until_idle(max_model_runs=0)  # register the worker
+    second = sweeper(api, lab, FakeLauncher(script=slow))
+    second.slot, second.registry = 1, registry
+    registry.hold(0, 999_999)  # slot 0 is loading a model: its memory is not visible yet
+    assert second.process_next() is None  # so slot 1 waits instead of over-committing
+    registry.release(0)
+
+    outcomes = {}
+    t0 = threading.Thread(target=lambda: outcomes.__setitem__(0, first.process_next()))
+    t0.start()
+    deadline = time.monotonic() + 10
+    while not any(loaded for _, loaded in registry.others(1)) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    outcomes[1] = second.process_next()
+    t0.join(timeout=30)
+    assert {outcomes[0].model, outcomes[1].model} == {"alpha-model", "beta-model"}
+    assert overlap.is_set()  # both servers answered requests at the same time
+    assert api.get_sweep(sweep.id).status == "completed"
+    assert result_count(db) == 2 * SEGMENTS

@@ -35,6 +35,10 @@ artifact_mounts = { jesseepc = "/data/artifacts-jesseepc" }
 lease_seconds = 900
 pending_batch = 25
 auto_pull_models = false
+# A second model at the same time when it fits in free GPU memory minus the headroom.
+# On 8 GB this only pairs small models (e.g. parakeet + whisper, ~1.6 GB each).
+max_concurrent_models = 1
+vram_headroom_mb = 1500
 
 [transcription.crispasr]
 # The pinned CUDA 12 build inside the worker image (Dockerfile target "worker").
