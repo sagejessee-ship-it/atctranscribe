@@ -680,3 +680,20 @@ def test_two_slots_transcribe_two_models_at_once(api, db, lab, monkeypatch):
     assert overlap.is_set()  # both servers answered requests at the same time
     assert api.get_sweep(sweep.id).status == "completed"
     assert result_count(db) == 2 * SEGMENTS
+
+
+def test_runs_over_an_unreadable_source_wait_without_loading_a_model(api, db, lab, tmp_path):
+    from aerochorus.worker.fs import ReadOnlyCorpusReader
+
+    sweep = new_sweep(api)
+    launcher = FakeLauncher()
+    worker = sweeper(api, lab, launcher)
+    worker.readers[SOURCE_KEY] = ReadOnlyCorpusReader(tmp_path / "share-offline")
+    for _ in range(3):
+        assert worker.process_next() is None  # nothing claimed, no model loaded
+    assert launcher.servers == []
+    assert api.get_sweep(sweep.id).status == "queued"
+
+    worker.readers[SOURCE_KEY] = ReadOnlyCorpusReader(lab.root)  # the share is back
+    assert worker.process_next().status == "completed"
+    assert len(launcher.servers) == 1

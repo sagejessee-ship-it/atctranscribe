@@ -152,6 +152,7 @@ class SweepWorker:
         self.readers = {
             key: ReadOnlyCorpusReader(mount.root) for key, mount in config.sources.items()
         }
+        self._unreadable: set[str] = set()
         self.log_dir = self.tc.artifact_root.parent / "logs"
         for key, mount in config.sources.items():
             for label, path in (
@@ -195,16 +196,36 @@ class SweepWorker:
             return None
         return [held for held, _ in others], free - self.tc.vram_headroom_mb
 
+    def _readable_sources(self) -> list[str]:
+        """Sources this worker can read right now. Runs over a share that is down are not
+        claimed: loading a model only to hand the run straight back would repeat every
+        minute until the share returns."""
+        readable = []
+        for key, reader in sorted(self.readers.items()):
+            check = reader.check_available()
+            if check.ok:
+                readable.append(key)
+                if key in self._unreadable:
+                    self._unreadable.discard(key)
+                    log.info("source %s is readable again; its runs continue", key)
+            elif key not in self._unreadable:
+                self._unreadable.add(key)
+                log.warning("source %s unavailable (%s); its runs wait", key, check.reason)
+        return readable
+
     def process_next(self) -> Outcome | None:
         budget = self._vram_budget()
         if budget is None:
+            return None
+        sources = self._readable_sources()
+        if not sources:
             return None
         exclude, max_vram = budget
         claim = self.client.claim_model_run(
             ClaimRequest(
                 worker_name=self.config.worker_name,
                 lease_seconds=self.tc.lease_seconds,
-                source_keys=sorted(self.config.sources),
+                source_keys=sources,
                 hardware_profile=self.hardware_profile,
                 exclude_model_runs=exclude,
                 max_vram_mb=max_vram,
@@ -343,11 +364,12 @@ class SweepWorker:
             if server is not None:
                 server.stop()
         log.info(
-            "model run %s (%s): %s after %s segments",
+            "model run %s (%s): %s after %s segments%s",
             claim.sweep_model_id,
             model.logical_name,
             outcome.status,
             outcome.processed,
+            f" ({outcome.message})" if outcome.status == "released" and outcome.message else "",
         )
         return outcome
 
