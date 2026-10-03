@@ -1,14 +1,18 @@
 # AeroChorus runbook
 
-This runbook covers checking the system, running the tests, and processing
-real data from the CLI. Every command below has been run on the RTX 5080 box
-(JesseePC, Windows 11). Differences for the M1 MacBook Air are called out
-inline.
+This runbook covers starting the system, checking it, running the tests,
+and processing real data. Everything runs on the RTX 5080 box (JesseePC,
+Windows 11) today, and every command below has been run there. The planned
+long-term host is the Linux desktop with the GTX 1070, running containers only
+(§10).
 
-> Shell note: commands are shown for bash-style shells. On Windows use Git
-> Bash, or PowerShell with the same commands. Every `aerochorus …` command is
-> run from the repository root as `uv run aerochorus …`.
+> Shell note: commands are shown for PowerShell or Git Bash, run from the
+> repository folder (`cd C:\Users\sagej\Projects\atctranscribe`). Every
+> `aerochorus …` command is written as `uv run aerochorus …`. If `uv` isn't
+> found, or the worker is running (it holds `aerochorus.exe` and `uv run` then
+> fails), use `.venv\Scripts\aerochorus.exe …` instead.
 
+- [Start here: starting AeroChorus after a restart](#start-here-starting-aerochorus-after-a-restart)
 - [0. Where things stand](#0-where-things-stand)
 - [1. One-time setup](#1-one-time-setup)
 - [2. Is everything up?](#2-is-everything-up)
@@ -19,10 +23,140 @@ inline.
 - [7. Evaluating against ATCO2](#7-evaluating-against-atco2)
 - [8. Qualifying models into `full-lab-v1`](#8-qualifying-models-into-full-lab-v1)
 - [9. Unattended operation](#9-unattended-operation)
-- [10. Moving the control plane to the M1](#10-moving-the-control-plane-to-the-m1)
+- [10. Production host (Linux, GTX 1070)](#10-production-host-linux-gtx-1070)
 - [11. Troubleshooting](#11-troubleshooting)
 - [12. Reference](#12-reference)
 - [13. Review workbench (Phase 5)](#13-review-workbench-phase-5)
+- [14. A full day on this PC, and the whole archive](#14-a-full-day-on-this-pc-windows-rtx-5080-the-pre-migration-check)
+
+---
+
+## Start here: starting AeroChorus after a restart
+
+Everything is already set up on this PC: the database, models, worker config
+and the saved NAS login. After a restart, one command brings the whole system
+back. Run it in a normal PowerShell window (Start menu → PowerShell); it works
+from any folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\sagej\Projects\atctranscribe\deploy\windows\start-aerochorus.ps1
+```
+
+It does four things, in order:
+
+1. **Docker Desktop:** starts it if it isn't running and waits for it. Then
+   it brings up Postgres and the API (`docker compose up -d`) and waits for
+   `http://127.0.0.1:8000/health`.
+2. **Review UI:** opens it in its own window at <http://127.0.0.1:8080>
+   (Review, Transcribe and Adjudication pages).
+3. **Archive share:** checks that the worker can read it, and says what to do
+   if it can't.
+4. **Worker:** runs the worker loop in the same window. Leave that window
+   open. The loop restarts the worker if it ever exits and logs to
+   `%USERPROFILE%\aerochorus-data\logs\worker-<date>.log`.
+
+Running it again is safe: nothing that is already running is started twice.
+
+A run that was transcribing when the PC went down continues where it stopped.
+A paused run stays paused until you press ▶ on the Transcribe page.
+
+To check it worked:
+
+- The worker window shows `processing queued sweeps with docker, up to N
+  model(s) at once`. If a run is queued, it then shows `claimed sweep …` and
+  `… loaded in …`.
+- The Transcribe page shows the worker's heartbeat, and the run's progress
+  moves.
+
+### Starting the pieces by hand
+
+| Piece | How | Notes |
+| --- | --- | --- |
+| Docker Desktop | Start menu | Postgres and the API come back with it (`restart: unless-stopped`) |
+| Database + API | `docker compose up -d` | add `--build` after pulling new code; it also applies migrations |
+| Review UI | `.venv\Scripts\aerochorus.exe ui serve` | leave its window open; <http://127.0.0.1:8080> |
+| Worker | `powershell -ExecutionPolicy Bypass -File deploy\windows\run-worker.ps1` | restarts the worker if it exits; don't also run `worker transcribe` |
+| Adjudicator (optional, paid) | `.venv\Scripts\aerochorus.exe adjudicate run --follow` | only while sending adjudication batches (§13) |
+
+Run these from the repository folder: paths like `deploy\windows\…` are
+relative to it. From anywhere else, use the full path, as in the one-command
+start above. Double-clicking a `.ps1` file opens it in Notepad instead of
+running it.
+
+### The archive share
+
+The worker reads `\\192.168.68.84\bwi` directly, with the NAS login saved in
+Windows Credential Manager. After a restart, File Explorer may show `Z:` as
+unavailable until you open it. The worker doesn't use `Z:`, so that doesn't
+matter.
+
+If the worker logs `source home_atc_archive unavailable (… user name or
+password is incorrect …)`, open `\\192.168.68.84\bwi` in File Explorer. Sign
+in to the NAS and tick **Remember my credentials**. Until then the worker waits
+without loading any model, and its runs continue by themselves once the share
+is readable.
+
+### Stopping
+
+- **Worker:** Ctrl-C in its window. The active model run is handed back and
+  resumes on the next start.
+- **To free the GPU but keep progress** (e.g. for a game): pause the run on
+  the Transcribe page (⏸). The worker releases the model within a few
+  seconds. Press ▶ to continue.
+- **Review UI:** close its window.
+- **Database and API:** leave them running; they use little. If you must,
+  `docker compose stop`.
+
+### Keeping the data safe
+
+| What | Where |
+| --- | --- |
+| Transcripts, reviews, gold, runs (the database) | Docker volume `aerochorus_pgdata`, inside Docker Desktop's disk (`%LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx`) |
+| Raw model outputs | `C:\Users\sagej\aerochorus-data\artifacts` |
+| Models | `C:\Users\sagej\aerochorus-data\models` |
+| Database backups | `C:\Users\sagej\aerochorus-data\backups` |
+| Source audio | the NAS share, read-only; AeroChorus never writes to it |
+
+**Never** use any of these. Each one deletes the database:
+
+- Docker Desktop's *Clean / Purge data* or *Reset to factory defaults*;
+- `docker system prune --volumes`, `docker volume prune` or
+  `docker compose down -v`;
+- deleting `docker_data.vhdx`, or uninstalling Docker Desktop.
+
+Clearing images and the build cache is safe, for example with
+`docker builder prune -a`.
+
+Back up the database before anything risky, such as a Docker update or
+shrinking Docker's disk. This works in PowerShell and Git Bash:
+
+```powershell
+docker compose exec -T postgres pg_dump -U aerochorus -Fc -f /tmp/aerochorus.dump aerochorus
+docker compose cp postgres:/tmp/aerochorus.dump C:\Users\sagej\aerochorus-data\backups\aerochorus-2026-10-03.dump
+```
+
+Change the date in the file name each time. Use the dump-then-copy route
+above: in Windows PowerShell, redirecting `pg_dump` output with `>` corrupts
+the dump. A copy on another drive or on the NAS media share (`M:`) is safer
+than one on C:.
+
+To check a backup without touching the live database, restore it into a
+scratch database, count, and drop it:
+
+```powershell
+docker compose cp C:\Users\sagej\aerochorus-data\backups\aerochorus-2026-10-03.dump postgres:/tmp/restore.dump
+docker compose exec -T postgres createdb -U aerochorus aerochorus_restore_check
+docker compose exec -T postgres pg_restore -U aerochorus -d aerochorus_restore_check /tmp/restore.dump
+docker compose exec -T postgres psql -U aerochorus -d aerochorus_restore_check -c "select count(*) from transcription_result"
+docker compose exec -T postgres dropdb -U aerochorus aerochorus_restore_check
+```
+
+To actually restore, which **replaces** the live database, stop the worker and
+the review UI first. Then:
+
+```powershell
+docker compose exec -T postgres pg_restore -U aerochorus -d aerochorus --clean --if-exists /tmp/restore.dump
+```
 
 ---
 
@@ -35,17 +169,19 @@ inline.
 | 2 Single-model transcription | done | Sweep 1: Parakeet over 100 real segments (80 transcribed, 20 abstained, 0 errors) |
 | 3 Automated model sweeps | done (CLI) | Sweep 2: six families × 100 segments, with kill -9 mid-run and a clean resume. Sweep 3: one hour (333 segments) × 4 families. Model runs and sweeps advance automatically; 0 errors |
 | 4 Evaluation / regression | done | ATCO2 benchmark (877 clips, gold in an isolated schema, derived calibration/test split); one symmetric scorer; entity recall; best-single + oracle; background quality flags on every result; v1 hypotheses re-scored for comparison |
-| 5 Research UI | not started | The CLI (`sweep transcripts`, `eval segments`, `segment results`) is the interim inspector |
+| 5 Research UI | done | Review workbench (agreement, gold/silver, spans); Transcribe page (runs, health, ETA, model voting, two models at once); ADS-B map; paid adjudication; test-pack download |
+| Linux deployment | prepared | Containers only, built here and shipped as a bundle (ADR-023); not yet installed on the host (§10) |
 | 6+ | not started | |
 
 Components:
 
 ```
 Linux collector ─SMB─▶ worker (native Python) ─HTTP─▶ API (Docker) ─▶ PostgreSQL (Docker)
-                           │
-                           └─▶ CrispASR server, one model at a time
-                               · RTX 5080 box: CUDA container (ghcr.io/crispstrobe/crispasr, pinned digest)
-                               · M1 Air: native Metal binary
+                           │                               ▲
+                           └─▶ CrispASR servers: CUDA      │
+                               container (pinned digest),  │
+                               up to two models at once    │
+       review UI server (`ui serve`, :8080) ───────────────┘ proxies the API, streams audio from the share
 ```
 
 Data locations on the 5080 box:
@@ -56,7 +192,8 @@ Data locations on the 5080 box:
 | Worker config | `%APPDATA%\aerochorus\worker.toml` |
 | Model artifacts | `C:\Users\sagej\aerochorus-data\models` (9.2 GB, six models) |
 | Raw CrispASR output | `C:\Users\sagej\aerochorus-data\artifacts\raw\…\*.json.zst` |
-| CrispASR server logs | `C:\Users\sagej\aerochorus-data\logs\` |
+| Worker and CrispASR server logs | `C:\Users\sagej\aerochorus-data\logs\` |
+| Database backups | `C:\Users\sagej\aerochorus-data\backups\` |
 | ATCO2 benchmark clips (derived, no gold) | `C:\Users\sagej\aerochorus-data\corpora\atco2_fixed` |
 | Native CrispASR build (optional) | `C:\Users\sagej\aerochorus-data\crispasr\v0.8.37-windows-cuda13\…\crispasr.exe` |
 | Database | Docker volume `aerochorus_pgdata` |
@@ -128,34 +265,6 @@ uv run aerochorus source add home_atc_archive --name "Home ATC archive (BWI)" \
 To use the native Windows build instead of the container, set
 `launcher = "native"` and
 `binary = 'C:\Users\sagej\aerochorus-data\crispasr\v0.8.37-windows-cuda13\crispasr-windows-x86_64-cuda13\crispasr.exe'`.
-
-### 1.4 Worker on the M1 MacBook Air
-
-```bash
-# 1. Mount the archive read-only (use an SMB account with read-only rights).
-mkdir -p /Volumes/ATC
-mount_smbfs -o rdonly //USER@192.168.68.84/bwi /Volumes/ATC
-
-# 2. Get the native CrispASR build and verify it against the release digest.
-mkdir -p ~/aerochorus-data/crispasr && cd ~/aerochorus-data/crispasr
-gh release download v0.8.37 -R CrispStrobe/CrispASR -p crispasr-macos.tar.gz
-shasum -a 256 crispasr-macos.tar.gz
-#   expect 4d3525c26d52cb0cfdfa0888b810b4b4e98e2d5c7035ced43e333a8ecc72377a
-tar xzf crispasr-macos.tar.gz && ./crispasr --version     # ggml backends should list metal
-
-# 3. Worker code and config.
-git clone https://github.com/sagejessee-ship-it/atctranscribe.git && cd atctranscribe
-uv sync
-mkdir -p ~/.config/aerochorus && cp config/worker.example.toml ~/.config/aerochorus/worker.toml
-# edit: worker_name, api_url (the control plane), root = "/Volumes/ATC",
-#       models_dir / artifact_root under ~/aerochorus-data, launcher = "native",
-#       binary = path to crispasr
-```
-
-If the control plane runs on the Mac too, do §1.1 there. Otherwise point
-`api_url` at the machine that runs it. The API binds to 127.0.0.1 by
-default; change the Compose port mapping deliberately if you want it on the
-LAN.
 
 ---
 
@@ -327,7 +436,7 @@ In a second terminal, watch progress:
 ```bash
 uv run aerochorus sweep show 1               # per-model progress, ok/abstain/error, RTF, CrispASR version
 uv run aerochorus sweep list
-docker ps --filter name=aerochorus-crispasr  # the one resident model server
+docker ps --filter name=aerochorus-crispasr  # the resident model server(s)
 ```
 
 For each model run the worker does the following:
@@ -352,8 +461,7 @@ faster.
 | voxtral | — | 0.38 | 1% | slowest; ATC-shaped output |
 
 Sweep 3 (one busy hour, 30.9 min of audio, four models) took about 20 minutes
-end to end, including model loads. On the M1, expect several times slower,
-which is acceptable: throughput is explicitly secondary.
+end to end, including model loads.
 
 ### 6.3 Inspect results
 
@@ -536,7 +644,7 @@ Suggested gates (to be replaced by ATCO2-fitted criteria in Phase 4):
 
 1. The model loads and every request answers: `error% = 0`.
 2. Language drift is 0 (English-only traffic).
-3. Its throughput is acceptable for the window sizes you plan on the M1.
+3. Its throughput is acceptable for the planned workload on the host that will run it.
 4. A spot read of `sweep transcripts` shows ATC-shaped output, not
    hallucinated prose.
 
@@ -561,94 +669,30 @@ uv run aerochorus worker run
 
 This runs heartbeats, incremental scans every 15 minutes for sources with
 `auto_scan = true`, a daily full scan, and queued sweeps (when
-`[transcription]` is present and `process_sweeps = true`). A sweep is
-processed one model run at a time, with scans re-checked between model runs.
-On macOS the worker holds a `caffeinate -i` assertion only while a scan or
-model run is active, so the Mac sleeps normally when idle. Stop it with
-Ctrl-C: the active model run is released and resumes later.
+`[transcription]` is present and `process_sweeps = true`). Each slot
+processes one model run at a time, and scans are re-checked between model
+runs. There is one slot, or two with `max_concurrent_models = 2` (§14.8).
+While a scan or model run is active, the worker keeps Windows from sleeping.
+Stop it with Ctrl-C: the active model run is released and resumes later.
+
+On this PC, run it through the start script or `run-worker.ps1` (see
+[Start here](#start-here-starting-aerochorus-after-a-restart)), which restart
+it if it exits.
 
 ---
 
-## 10. Moving the control plane to the M1
+## 10. Production host (Linux, GTX 1070)
 
-> **Superseded (2026-09-27, ADR-021, ADR-023).** The Mac is an Intel client
-> with 8 GB of RAM, not a server. The primary host is the Linux desktop with
-> the GTX 1070, which runs **containers only**, built on this PC and shipped
-> as a bundle. See
-> [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md)
-> and [deployment/MIGRATION.md](deployment/MIGRATION.md). §14 is the
-> pre-migration check on this PC. The rest of this section is kept for
-> history.
+The long-term host is the Linux desktop with the GTX 1070. It runs
+**containers only**: the images are built on this PC and shipped as a bundle,
+and no development tools are installed on the host (ADR-021, ADR-023).
 
-The target layout: the **M1 runs the control plane and the archive worker**,
-and **this PC stays a GPU/benchmark worker** pointed at the M1. Nothing in
-the code assumes which machine is which. Workers are identified by name, and
-each claims only sweeps over sources it mounts.
+- Deployment: [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md)
+- Moving the database and artifacts: [deployment/MIGRATION.md](deployment/MIGRATION.md)
+- The steps from this PC: §14.9
 
-```
-M1 MacBook Air                                   RTX 5080 box (this PC)
-  docker compose: postgres + api (LAN-bound) ◀── worker "jesseepc-5080"
-  worker "m1-air": native CrispASR (Metal)          sources: atco2_fixed (+ archive, optional)
-    sources: home_atc_archive (/Volumes/ATC, ro)    CrispASR: CUDA container
-```
-
-### 10.1 Stand up the M1
-
-1. Install Docker Desktop (Apple silicon), `uv`, `git` and `gh`. The Compose
-   images (`postgres:17`, `python:3.12-slim`, `ghcr.io/astral-sh/uv`) are
-   multi-arch, so `docker compose up -d --build` builds natively on arm64.
-2. Mount the archive read-only and install the native CrispASR build (§1.4).
-3. Move the database from this PC. The dump carries the corpus index,
-   registry, sweeps, results and gold.
-
-   ```bash
-   # on this PC
-   docker compose exec -T postgres pg_dump -U aerochorus -Fc aerochorus > aerochorus.dump
-   # copy aerochorus.dump to the M1, then on the M1 (in the repo):
-   docker compose up -d postgres
-   docker compose exec -T postgres pg_restore -U aerochorus -d aerochorus --clean --if-exists < aerochorus.dump
-   AEROCHORUS_API_BIND=<m1-lan-ip> docker compose up -d --build     # migrate is a no-op; api on the LAN
-   ```
-
-   Or start fresh on the M1 and re-index: about an hour over SMB, but you
-   lose earlier sweeps and gold.
-4. On the M1, write `~/.config/aerochorus/worker.toml` from
-   `config/worker.example.toml` (`launcher = "native"`,
-   `root = "/Volumes/ATC"`, `artifact_store = "m1-air"`). Then:
-
-   ```bash
-   uv run aerochorus worker models pull        # 9.2 GB, or copy the models dir; both are SHA-verified
-   uv run aerochorus worker health
-   uv run aerochorus worker crispasr check --model parakeet-tdt-0.6b-v3-q8_0 --audio /Volumes/ATC/2026/09/08/<file>.mp3
-   ```
-
-### 10.2 Point this PC at the M1
-
-In `%APPDATA%\aerochorus\worker.toml` on this PC, set
-`api_url = "http://<m1-lan-ip>:8000"`. Keep `[sources.atco2_fixed]`. Keep
-`[sources.home_atc_archive]` only if this PC should also take archive work.
-Model runs never mix machines, because each model run keeps the runtime
-fingerprint it started with. Then run `uv run aerochorus worker run` (or
-`worker transcribe`) here as before.
-
-### 10.3 Raw artifacts
-
-Raw CrispASR outputs stay on the machine that produced them:
-`artifact://jesseepc/…` here, `artifact://m1-air/…` on the Mac. To read the
-PC's artifacts on the Mac, copy (or share) the directory and map it:
-
-```toml
-[transcription.artifact_mounts]
-jesseepc = "/Users/me/aerochorus-data/jesseepc-artifacts"
-```
-
-### 10.4 Checklist before switching
-
-- [ ] `aerochorus worker health` exits 0 on both machines.
-- [ ] `aerochorus sweep list` on the M1 shows the migrated sweeps.
-- [ ] A 100-segment smoke sweep on the M1 completes with the native runtime.
-- [ ] An ATCO2 sweep created on the M1 is claimed by this PC and not by the M1.
-- [ ] The Mac sleeps normally when idle (the worker holds `caffeinate` only while working).
+Until then, this PC runs everything (see
+[Start here](#start-here-starting-aerochorus-after-a-restart)).
 
 ---
 
@@ -658,6 +702,10 @@ jesseepc = "/Users/me/aerochorus-data/jesseepc-artifacts"
 | --- | --- |
 | `/health` → `degraded`, `migrations_current: false` | Code and database disagree. `docker compose up -d --build` (runs `migrate`). |
 | `worker health` → source `available: false` | Share unmounted or unreachable. Remount; scans report `source_unavailable` and change nothing meanwhile. |
+| Worker logs `source home_atc_archive unavailable (… user name or password is incorrect …)` | The NAS login lapsed. Open `\\192.168.68.84\bwi` in File Explorer, sign in, tick **Remember my credentials**. The worker waits meanwhile and continues by itself. |
+| `run-worker.ps1` does nothing, or "The argument … to the -File parameter does not exist" | It was run from another folder (PowerShell opens in your home folder). Use the full path, or the start script ([Start here](#start-here-starting-aerochorus-after-a-restart)). Double-clicking a `.ps1` only opens it in Notepad. |
+| <http://127.0.0.1:8080> doesn't load | The review UI isn't running. Start it with the start script, or `.venv\Scripts\aerochorus.exe ui serve` from the repository folder. |
+| Worker log says `up to 1 model(s) at once` but you set 2 | The worker read a config without the setting. Edit `%APPDATA%\aerochorus\worker.toml` in your own editor; edits made from inside the Claude desktop app go to a private copy (§14.8). |
 | `sweep create` → 409 "not sweep-eligible" | Qualify the models (§8) or add `--allow-unqualified` for a smoke/qualification sweep. |
 | model run `failed`: "does not match the registered size/sha256" | Corrupt or partial model file. `worker models pull <name>` re-downloads and verifies it. |
 | model run `failed`: "runtime differs from the one this model run started with" | CrispASR build or image changed mid-run. Finish on the original runtime, or create a new sweep. |
@@ -710,7 +758,7 @@ uv run aerochorus ui serve                          # → http://127.0.0.1:8080/
 ```
 
 - `ui serve` runs natively where the corpus is mounted (it reuses the worker
-  config's `[sources]`). On the M1 that is the Mac itself.
+  config's `[sources]`).
 - `ui serve --api http://<control-plane>:8000` points it at a remote control
   plane.
 - Audio problems appear in the inspector with the edge's reason:
@@ -807,17 +855,15 @@ few segments. Nothing here touches the Linux host.
 
 ### 14.1 Start (each session)
 
-In PowerShell, from `C:\Users\sagej\Projects\atctranscribe`:
+Use the start script
+([Start here](#start-here-starting-aerochorus-after-a-restart)). It brings up
+Docker, the database, the API, the review UI and the worker.
 
-```powershell
-docker compose up -d --build          # Postgres + API; picks up .env (OpenSky keys) and new code
-uv run aerochorus ui serve            # review UI → http://127.0.0.1:8080/review (leave this window open)
-```
-
-If `ui serve` is still running from an earlier session, stop it (Ctrl-C)
-and start it again after pulling new code. `docker compose up -d --build`
-also applies database migrations. After editing `.env`, recreate the API
-with `docker compose up -d --force-recreate api`.
+After pulling new code, rebuild the API first, from the repository folder:
+`docker compose up -d --build`. This also applies database migrations. Then
+close the review UI window and stop the worker (Ctrl-C), and run the start
+script again. After editing `.env`, recreate the API with
+`docker compose up -d --force-recreate api`.
 
 ### 14.2 Make sure the day is indexed
 
@@ -864,11 +910,15 @@ uv run aerochorus sweep create --suite review-core --source home_atc_archive --d
 
 ### 14.4 Run the worker
 
+The start script's worker already processes queued runs. Without it, run
+this; it works through the queued runs, then exits:
+
 ```powershell
-uv run aerochorus worker transcribe     # works through queued runs, then exits
+uv run aerochorus worker transcribe
 ```
 
-It runs one model at a time on the 5080, through the pinned CrispASR CUDA
+Don't run both at once. The worker runs one model at a time on the 5080, or
+two with `max_concurrent_models = 2` (§14.8), through the pinned CrispASR CUDA
 image. Progress and ETA show on the Transcribe page. While a model run is
 active, the worker keeps Windows from sleeping; the display may still turn
 off. Ctrl-C releases the current model run cleanly, and running the same
@@ -961,14 +1011,11 @@ Before leaving it alone:
    voting-family models (not `canary-1b-v2-q8_0`), **only segments these
    models have not transcribed**, and **Allow models not yet qualified**.
    Then click **Queue transcription run**. Creating it takes a few seconds.
-2. Start the worker in a loop that restarts it if it ever exits and logs to
-   `%USERPROFILE%\aerochorus-data\logs\worker-<date>.log`:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File deploy\windows\run-worker.ps1
-   ```
-
-   Leave that window open. Do not also run `worker transcribe`.
+2. Start everything with the start script
+   ([Start here](#start-here-starting-aerochorus-after-a-restart)). Its
+   worker restarts itself if it ever exits, and logs to
+   `%USERPROFILE%\aerochorus-data\logs\worker-<date>.log`. Leave that
+   window open. Do not also run `worker transcribe`.
 3. **Windows Update:** Settings → Windows Update → *Pause updates* for 1
    week, so the PC does not restart itself.
 4. **Docker Desktop** must keep running (it hosts the database, the API and
@@ -999,16 +1046,17 @@ worker after changing the setting.
 
 What recovers by itself:
 
-- **Share outage**: the work is handed back and resumes when the share is
-  readable.
+- **Share outage or lapsed NAS login**: the work is handed back, and the
+  worker waits without loading models until the share is readable again.
 - **API restart**: the worker waits and continues.
 - **A clip that crashes a model**: that segment is recorded as an error and
   CrispASR restarts.
 - **A model run that fails outright**: the next model continues. Retry the
   failed one later from the run's ↻ button.
 
-What does not recover by itself: a Windows restart. After one, start Docker
-Desktop and the script again, and the run continues where it stopped.
+What does not recover by itself: a Windows restart. After one, run the
+start script ([Start here](#start-here-starting-aerochorus-after-a-restart)),
+and the run continues where it stopped.
 
 ### 14.9 When it looks right: migrate
 
