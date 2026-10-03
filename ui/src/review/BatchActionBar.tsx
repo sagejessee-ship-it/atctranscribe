@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "../api/client";
+import { Download } from "lucide-react";
+
+import { TEST_PACK_MAX, api, downloadTestPack } from "../api/client";
 import type { BatchAction, BatchOutcome } from "../api/types";
 import { Button, ErrorBox } from "../components/ui";
 import { useAnnotator } from "../lib/annotator";
@@ -49,6 +51,14 @@ export function BatchActionBar({
       client.invalidateQueries({ queryKey: ["segment"] });
     },
   });
+  const pack = useMutation({
+    mutationFn: () => downloadTestPack(selectedIds),
+    onSuccess: ({ filename, segments, skipped }) =>
+      onDone(
+        `Downloaded ${filename}: ${segments} segment${segments === 1 ? "" : "s"} (audio + prompt)` +
+          (skipped ? `; ${skipped} skipped (see README.txt)` : ""),
+      ),
+  });
   if (!selectedIds.length) return null;
   return (
     <div className="batchbar" role="region" aria-label="Batch actions">
@@ -67,12 +77,25 @@ export function BatchActionBar({
           Adjudicate…
         </Button>
       ) : null}
+      <Button
+        size="sm"
+        onClick={() => pack.mutate()}
+        disabled={pack.isPending || selectedIds.length > TEST_PACK_MAX}
+        title={
+          selectedIds.length > TEST_PACK_MAX
+            ? `At most ${TEST_PACK_MAX} segments per download`
+            : "A zip with each segment's audio and a chat-ready adjudication prompt, for manual tests"
+        }
+      >
+        <Download size={13} aria-hidden /> {pack.isPending ? "Packing…" : "Download for testing"}
+      </Button>
       <span className="muted batchbar__note">Gold is set per segment after listening.</span>
       <span className="toolbar__spacer" />
       <Button size="sm" variant="ghost" onClick={onClear}>
         Clear selection
       </Button>
       {batch.error ? <ErrorBox title="Batch action failed" detail={(batch.error as Error).message} /> : null}
+      {pack.error ? <ErrorBox title="Download failed" detail={(pack.error as Error).message} /> : null}
     </div>
   );
 }

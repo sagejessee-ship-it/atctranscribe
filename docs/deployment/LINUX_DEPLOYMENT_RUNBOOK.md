@@ -213,6 +213,12 @@ env = { CRISPASR_KV_QUANT = "q8_0" }
 The strategy and its env are recorded with every run and qualification, and
 they are part of the runtime fingerprint. Re-qualify after changing them.
 
+`max_concurrent_models = 2` (default 1) lets a second model run at the same
+time. It starts only when its estimated footprint fits in free GPU memory minus
+`vram_headroom_mb`. The estimate comes from qualification on this profile, or
+from the file size when there is none. On 8 GB only small pairs fit, such as
+parakeet + whisper. Leave it at 1 until qualification has measured the models.
+
 ## 10. Qualification (before any production sweep)
 
 Qualification needs the GPU, so it runs in the worker service's container

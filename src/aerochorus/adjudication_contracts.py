@@ -173,6 +173,19 @@ class AdjudicationBatchDetail(AdjudicationBatchView):
     items: list[AdjudicationItemView]
 
 
+class AdjudicationContext(BaseModel):
+    """A segment's adjudication input as text: the chat-ready prompt for manual tests,
+    and the instructions + context exactly as the automated adjudicator sends them."""
+
+    segment_id: int
+    relative_path: str
+    sha256: str | None
+    prompt_version: int
+    chat_prompt: str
+    system_prompt: str
+    context_text: str
+
+
 # --- runner protocol ------------------------------------------------------------------------
 
 

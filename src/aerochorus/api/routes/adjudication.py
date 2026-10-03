@@ -8,6 +8,7 @@ from aerochorus.adjudication_contracts import (
     AdjudicationBatchDetail,
     AdjudicationBatchView,
     AdjudicationClaimRequest,
+    AdjudicationContext,
     AdjudicationCreate,
     AdjudicationItemView,
     AdjudicationPreview,
@@ -99,6 +100,12 @@ def accept(
 ) -> AdjudicationAcceptOutcome:
     """Adjudicated transcripts -> silver (never gold; never over human text or decisions)."""
     return _call(session, lambda: svc.accept(session, body, request.app.state.settings))
+
+
+@router.get("/segments/{segment_id}/adjudication-context", response_model=AdjudicationContext)
+def adjudication_context(segment_id: int, session: SessionDep) -> AdjudicationContext:
+    """The prompt text for one segment (manual tests; the audio comes from the edge)."""
+    return _call(session, lambda: svc.context_for(session, segment_id), commit=False)
 
 
 @router.get("/segments/{segment_id}/adjudications", response_model=list[AdjudicationItemView])

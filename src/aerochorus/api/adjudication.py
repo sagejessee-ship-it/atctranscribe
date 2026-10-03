@@ -17,13 +17,20 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from aerochorus.adjudication.openrouter import fetch_pricing
-from aerochorus.adjudication.prompt import PROMPT_VERSION, estimate_item_cost
+from aerochorus.adjudication.prompt import (
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
+    estimate_item_cost,
+    render_chat_prompt,
+    render_context,
+)
 from aerochorus.adjudication_contracts import (
     AdjudicationAccept,
     AdjudicationAcceptOutcome,
     AdjudicationBatchDetail,
     AdjudicationBatchView,
     AdjudicationClaimRequest,
+    AdjudicationContext,
     AdjudicationCreate,
     AdjudicationItemView,
     AdjudicationPreview,
@@ -484,7 +491,9 @@ def build_bundle(session: Session, segment_id: int, params: dict[str, Any]) -> d
         bundle["airport"] = {
             "icao": profile.icao,
             "name": profile.name,
-            "runways": [{"end": r.end_ident, "spoken": r.spoken} for r in profile.runways],
+            "runways": [
+                {"end": r.end_ident, "pair": r.pair, "spoken": r.spoken} for r in profile.runways
+            ],
             "frequencies": [
                 {"service": f.service, "mhz": f.frequency_hz / 1e6, "call": f.call}
                 for f in profile.frequencies
@@ -557,6 +566,23 @@ def build_bundle(session: Session, segment_id: int, params: dict[str, Any]) -> d
                 ],
             }
     return bundle
+
+
+def context_for(session: Session, segment_id: int) -> AdjudicationContext:
+    """One segment's adjudication input as text, for manual tests (no batch, no spend)."""
+    segment = session.get(Segment, segment_id)
+    if segment is None:
+        raise NotFound(f"unknown segment: {segment_id}")
+    bundle = build_bundle(session, segment_id, {"include_adsb": True, "include_neighbors": True})
+    return AdjudicationContext(
+        segment_id=segment_id,
+        relative_path=segment.relative_path,
+        sha256=segment.sha256,
+        prompt_version=PROMPT_VERSION,
+        chat_prompt=render_chat_prompt(bundle),
+        system_prompt=SYSTEM_PROMPT,
+        context_text=render_context(bundle),
+    )
 
 
 # --- runner protocol --------------------------------------------------------------------------

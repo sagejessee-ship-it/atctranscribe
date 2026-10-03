@@ -88,3 +88,44 @@ def test_api_proxy_and_spa_fallback(app, api, source, corpus, tmp_path):
         assert edge.get("/../pyproject.toml").text.startswith("<!doctype html>")
         health = edge.get("/edge/health").json()
         assert health["api_reachable"] is True
+
+
+def test_test_pack_zips_audio_with_prompts(app, api, source, corpus):
+    import csv
+    import io
+    import zipfile
+
+    root, _ = corpus
+    make_scanner(api, root).scan(SOURCE_KEY)
+    segments = api_segments(api)
+    picked = [segments[GND], next(s for p, s in segments.items() if p != GND)]
+    ids = [s["id"] for s in picked] + [999_999]  # one that does not exist
+    with edge_client(app, sources={SOURCE_KEY: SourceMount(root=root)}) as edge:
+        response = edge.post("/edge/test-pack", json={"segment_ids": ids})
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "application/zip"
+        assert (
+            'filename="aerochorus-test-pack-2-segments-' in response.headers["content-disposition"]
+        )
+        assert response.headers["x-pack-skipped"] == "1"
+        pack = zipfile.ZipFile(io.BytesIO(response.content))
+        names = pack.namelist()
+        for n, segment in enumerate(picked, 1):
+            stem = f"{n:03d}_{segment['id']}"
+            audio = f"{stem}_{segment['relative_path'].rsplit('/', 1)[-1]}"
+            assert pack.read(audio) == (root / segment["relative_path"]).read_bytes()
+            prompt = pack.read(f"{stem}_prompt.txt").decode()
+            assert prompt.startswith(f"[Attach {audio}]")
+            assert "Machine transcripts:" in prompt
+            full = pack.read(f"{stem}_full-prompt.txt").decode()
+            assert (
+                full.startswith("You adjudicate air traffic control")
+                and "----- context -----" in full
+            )
+        assert "README.txt" in names and "segment 999999" in pack.read("README.txt").decode()
+        rows = list(csv.DictReader(io.StringIO(pack.read("manifest.csv").decode())))
+        assert [int(r["segment_id"]) for r in rows] == [s["id"] for s in picked]
+        assert rows[0]["audio_sha256"] == picked[0]["sha256"]
+    with edge_client(app) as edge:  # nothing mounted: nothing to pack
+        empty = edge.post("/edge/test-pack", json={"segment_ids": ids[:1]})
+        assert empty.status_code == 503 and "could be packed" in empty.json()["detail"]

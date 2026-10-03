@@ -32,6 +32,7 @@ from aerochorus.sweep_contracts import (
     ResultStatus,
     SweepStatus,
 )
+from aerochorus.worker import hardware
 from aerochorus.worker.artifacts import ArtifactStore
 from aerochorus.worker.client import ApiClient, ApiError
 from aerochorus.worker.config import WorkerConfig
@@ -63,6 +64,8 @@ MAX_RESTARTS = 3
 # tried as the smoke test; after this many the backend is judged broken and the model
 # run fails without recording any results.
 MAX_SMOKE_SEGMENTS = 3
+# A progress line in the log this often, so a long model run visibly moves.
+PROGRESS_EVERY_S = 300.0
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -72,6 +75,31 @@ def _is_within(child: Path, parent: Path) -> bool:
         return os.path.commonpath([child_s, parent_s]) == parent_s
     except ValueError:  # different drives / UNC hosts
         return False
+
+
+class SlotRegistry:
+    """Model runs the slots of one worker hold, and whether each model is fully loaded."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: dict[int, tuple[int, bool]] = {}  # slot -> (sweep_model_id, loaded)
+
+    def hold(self, slot: int, sweep_model_id: int) -> None:
+        with self._lock:
+            self._held[slot] = (sweep_model_id, False)
+
+    def loaded(self, slot: int) -> None:
+        with self._lock:
+            if slot in self._held:
+                self._held[slot] = (self._held[slot][0], True)
+
+    def release(self, slot: int) -> None:
+        with self._lock:
+            self._held.pop(slot, None)
+
+    def others(self, slot: int) -> list[tuple[int, bool]]:
+        with self._lock:
+            return [held for s, held in self._held.items() if s != slot]
 
 
 class SmokeFailed(RuntimeError):
@@ -104,15 +132,21 @@ class SweepWorker:
         *,
         launcher: Launcher | None = None,
         stop: threading.Event | None = None,
+        slot: int = 0,
+        registry: SlotRegistry | None = None,
     ) -> None:
         if config.transcription is None:
             raise CrispAsrError("this worker has no [transcription] configuration")
         self.client = client
         self.config = config
         self.tc = config.transcription
+        self.slot = slot
+        self.registry = registry or SlotRegistry()
         self.store = ModelStore(self.tc.models_dir)
         self.artifacts = ArtifactStore(self.tc.artifact_root, self.tc.artifact_store)
-        self.launcher = launcher or make_launcher(self.tc.crispasr)
+        # Each slot runs its own CrispASR server: its own port (and container name).
+        crisp = self.tc.crispasr.model_copy(update={"host_port": self.tc.crispasr.host_port + slot})
+        self.launcher = launcher or make_launcher(crisp)
         self.hardware_profile = resolve_profile(config.hardware_profile)
         self.stop = stop or threading.Event()
         self.readers = {
@@ -146,17 +180,45 @@ class SweepWorker:
             outcomes.append(outcome)
         return outcomes
 
+    def _vram_budget(self) -> tuple[list[int], int | None] | None:
+        """(model runs held by the other slots, GPU memory this slot may use), or None
+        when this slot should not start anything now."""
+        others = self.registry.others(self.slot)
+        if not others:
+            # Alone on the GPU: the first slot takes whatever comes next, as always. An
+            # extra slot only ever joins a model that is already running.
+            return ([], None) if self.slot == 0 else None
+        if not all(loaded for _, loaded in others):
+            return None  # another model is still loading: its memory is not visible yet
+        free = hardware.gpu_memory_free_mb()
+        if free is None or free - self.tc.vram_headroom_mb < 256:
+            return None
+        return [held for held, _ in others], free - self.tc.vram_headroom_mb
+
     def process_next(self) -> Outcome | None:
+        budget = self._vram_budget()
+        if budget is None:
+            return None
+        exclude, max_vram = budget
         claim = self.client.claim_model_run(
             ClaimRequest(
                 worker_name=self.config.worker_name,
                 lease_seconds=self.tc.lease_seconds,
                 source_keys=sorted(self.config.sources),
                 hardware_profile=self.hardware_profile,
+                exclude_model_runs=exclude,
+                max_vram_mb=max_vram,
             )
         )
         if claim is None:
             return None
+        if max_vram is not None:
+            log.info(
+                "slot %s: %s runs alongside another model (%s MB of GPU memory available)",
+                self.slot,
+                claim.model.logical_name,
+                max_vram,
+            )
         log.info(
             "claimed sweep %s model %s (attempt %s, %s/%s already recorded)",
             claim.sweep_id,
@@ -165,8 +227,12 @@ class SweepWorker:
             claim.results_recorded,
             claim.segments_total,
         )
-        with keep_awake(f"sweep {claim.sweep_id} {claim.model.logical_name}"):
-            return self._process(claim)
+        self.registry.hold(self.slot, claim.sweep_model_id)
+        try:
+            with keep_awake(f"sweep {claim.sweep_id} {claim.model.logical_name}"):
+                return self._process(claim)
+        finally:
+            self.registry.release(self.slot)
 
     # -- one model run --------------------------------------------------------------------
 
@@ -210,6 +276,7 @@ class SweepWorker:
             self._verify_identity(claim, health, server)
             load_s = round(time.monotonic() - started, 1)
             log.info("%s loaded in %ss (%s)", model.logical_name, load_s, health)
+            self.registry.loaded(self.slot)
 
             def restart() -> Server:
                 """A fresh server for the same model after a crash (same runtime and settings)."""
@@ -333,9 +400,28 @@ class SweepWorker:
         held: list[ResultPost] = []
         held_ids: set[int] = set()
 
+        progress = {"at": time.monotonic(), "processed": 0, "errors": 0}
+
         def post(result: ResultPost) -> None:
-            self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
+            ack = self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
             outcome.processed += 1
+            progress["errors"] += result.status == ResultStatus.ERROR
+            now = time.monotonic()
+            if now - progress["at"] >= PROGRESS_EVERY_S:
+                rate = (outcome.processed - progress["processed"]) / (now - progress["at"])
+                left = ack.segments_total - ack.segments_recorded
+                log.info(
+                    "%s (sweep %s): %s/%s done, %.2f segments/s, %s errors so far, "
+                    "~%.1f h left for this model",
+                    claim.model.logical_name,
+                    claim.sweep_id,
+                    f"{ack.segments_recorded:,}",
+                    f"{ack.segments_total:,}",
+                    rate,
+                    progress["errors"],
+                    left / rate / 3600 if rate else float("nan"),
+                )
+                progress["at"], progress["processed"] = now, outcome.processed
 
         def recover(segment: PendingSegment, result: ResultPost) -> Server:
             nonlocal restarts, smoke_done

@@ -455,6 +455,7 @@ class TranscriptionResult(Base):
         ),
         CheckConstraint("artifact_sha256 ~ '^[0-9a-f]{64}$'", name="artifact_sha256_format"),
         CheckConstraint("audio_sha256 ~ '^[0-9a-f]{64}$'", name="audio_sha256_format"),
+        Index("ix_transcription_result_srm_created", "sweep_run_model_id", "created_at"),
     )
 
 

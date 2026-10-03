@@ -149,6 +149,18 @@ def gpu_memory_used_mb(index: int = 0) -> int | None:
         return None
 
 
+def gpu_memory_free_mb(index: int = 0) -> int | None:
+    """Free memory on GPU ``index`` right now (anything else using it counts, e.g. a game)."""
+    out = _run(
+        ["nvidia-smi", f"--id={index}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+        timeout=10,
+    )
+    try:
+        return int(float(out.strip())) if out else None
+    except ValueError:
+        return None
+
+
 def parse_meminfo(text: str) -> int | None:
     match = re.search(r"^MemTotal:\s+(\d+)\s+kB", text, re.MULTILINE)
     return int(match[1]) // 1024 if match else None

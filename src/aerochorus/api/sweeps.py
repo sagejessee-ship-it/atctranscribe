@@ -552,12 +552,99 @@ def _rtf(srm: SweepRunModel) -> float | None:
     return round(srm.inference_ms_total / srm.audio_ms_total, 4)
 
 
-def sweep_read(session: Session, run: SweepRun) -> SweepRead:
-    srms = session.scalars(
-        select(SweepRunModel)
-        .where(SweepRunModel.run_id == run.id)
-        .order_by(SweepRunModel.execution_order)
+STALL_AFTER = timedelta(minutes=10)
+OPEN_MODEL_RUNS = (
+    ModelRunStatus.QUEUED,
+    ModelRunStatus.LOADING,
+    ModelRunStatus.RUNNING,
+    ModelRunStatus.RETRYING,
+)
+_selection_audio: dict[int, int] = {}  # run id -> selected audio ms (a run's selection is fixed)
+
+
+def _selected_audio_ms(session: Session, run_id: int) -> int:
+    if run_id not in _selection_audio:
+        _selection_audio[run_id] = int(
+            session.scalar(
+                select(func.coalesce(func.sum(Segment.duration_ms), 0))
+                .select_from(SweepRunSegment)
+                .join(Segment, Segment.id == SweepRunSegment.segment_id)
+                .where(SweepRunSegment.run_id == run_id)
+            )
+        )
+    return _selection_audio[run_id]
+
+
+def _wall_per_audio(session: Session) -> dict[int, float]:
+    """Model id -> wall seconds per audio second, from finished model runs."""
+    wall = func.extract("epoch", SweepRunModel.completed_at - SweepRunModel.started_at)
+    rows = session.execute(
+        select(SweepRunModel.model_id, func.sum(wall), func.sum(SweepRunModel.audio_ms_total))
+        .where(
+            SweepRunModel.status == ModelRunStatus.COMPLETED,
+            SweepRunModel.started_at.is_not(None),
+            SweepRunModel.completed_at.is_not(None),
+            SweepRunModel.audio_ms_total > 10_000,
+        )
+        .group_by(SweepRunModel.model_id)
     )
+    return {mid: float(w) / (float(a) / 1000) for mid, w, a in rows if w and a}
+
+
+def _health(session: Session, s: SweepRunModel, now: datetime) -> dict[str, Any]:
+    if s.status not in (ModelRunStatus.RUNNING, ModelRunStatus.LOADING):
+        return {}
+    last = session.scalar(
+        select(func.max(TranscriptionResult.created_at)).where(
+            TranscriptionResult.sweep_run_model_id == s.id
+        )
+    )
+    recent = session.scalar(
+        select(func.count()).where(
+            TranscriptionResult.sweep_run_model_id == s.id,
+            TranscriptionResult.created_at > now - timedelta(minutes=10),
+        )
+    )
+    since = last or s.started_at
+    stalled = s.status == ModelRunStatus.RUNNING and (
+        (since is not None and now - since > STALL_AFTER)
+        or (s.lease_expires_at is not None and s.lease_expires_at < now)
+    )
+    return {"last_result_at": last, "recent_per_min": round(recent / 10, 1), "stalled": stalled}
+
+
+def _eta_seconds(
+    session: Session, s: SweepRunModel, history: dict[int, float], now: datetime
+) -> float | None:
+    if s.status not in OPEN_MODEL_RUNS:
+        return None
+    processed = s.segments_completed + s.segments_abstained + s.segments_error
+    remaining_audio_s = max(_selected_audio_ms(session, s.run_id) - s.audio_ms_total, 0) / 1000
+    if s.status == ModelRunStatus.RUNNING and s.started_at and processed >= 200:
+        rate = (now - s.started_at).total_seconds() / max(s.audio_ms_total / 1000, 1)
+        return remaining_audio_s * rate
+    if s.model_id in history:
+        return remaining_audio_s * history[s.model_id] + 30  # + loading the model
+    return None
+
+
+def sweep_read(
+    session: Session, run: SweepRun, history: dict[int, float] | None = None
+) -> SweepRead:
+    srms = list(
+        session.scalars(
+            select(SweepRunModel)
+            .where(SweepRunModel.run_id == run.id)
+            .order_by(SweepRunModel.execution_order)
+        )
+    )
+    now = utcnow()
+    live = run.status in (SweepStatus.QUEUED, SweepStatus.RUNNING, SweepStatus.PAUSED)
+    if live and history is None:
+        history = _wall_per_audio(session)
+    etas = {s.id: _eta_seconds(session, s, history, now) if live else None for s in srms}
+    open_runs = [s for s in srms if s.status in OPEN_MODEL_RUNS] if live else []
+    known = [etas[s.id] for s in open_runs if etas[s.id] is not None]
     return SweepRead(
         id=run.id,
         name=run.name,
@@ -589,9 +676,14 @@ def sweep_read(session: Session, run: SweepRun) -> SweepRead:
                 last_error=s.last_error,
                 started_at=s.started_at,
                 completed_at=s.completed_at,
+                processed=s.segments_completed + s.segments_abstained + s.segments_error,
+                eta_seconds=round(etas[s.id]) if etas[s.id] is not None else None,
+                **_health(session, s, now),
             )
             for s in srms
         ],
+        eta_seconds=round(sum(known)) if known else None,
+        eta_partial=len(known) < len(open_runs),
     )
 
 
@@ -605,15 +697,58 @@ def request_params(run: SweepRun, model: Model) -> dict[str, str]:
 # --- worker protocol --------------------------------------------------------------------
 
 
+def estimated_vram_mb(model: Model, metrics: dict[str, Any] | None) -> int:
+    """GPU memory one CrispASR server with this model needs, including inference peaks.
+
+    Measured by qualification on the profile when available (peak minus what was in use
+    before), else from the artifact size plus room for activations and a CUDA context.
+    """
+    if metrics:
+        peak, before = metrics.get("vram_peak_mb"), metrics.get("vram_before_mb")
+        if peak and before is not None and peak > before:
+            return int(peak - before + 200)
+        if metrics.get("vram_model_mb"):
+            return int(metrics["vram_model_mb"] * 1.25 + 200)
+    return int((model.artifact_size_bytes or 0) / 2**20 * 1.3 + 700)
+
+
+def _models_fitting(session: Session, max_vram_mb: int, hardware_profile: str | None) -> list[int]:
+    measured = {}
+    if hardware_profile:
+        measured = dict(
+            session.execute(
+                select(
+                    ModelPlatformQualification.model_id, ModelPlatformQualification.metrics
+                ).where(ModelPlatformQualification.hardware_profile == hardware_profile)
+            ).all()
+        )
+    return [
+        m.id
+        for m in session.scalars(select(Model))
+        if estimated_vram_mb(m, measured.get(m.id)) <= max_vram_mb
+    ]
+
+
 def claim(
     session: Session,
     worker: Worker,
     lease_seconds: int,
     source_keys: list[str] | None = None,
     hardware_profile: str | None = None,
+    exclude_model_runs: list[int] | None = None,
+    max_vram_mb: int | None = None,
 ) -> SweepRunModel | None:
     now = utcnow()
     query = select(SweepRunModel).join(SweepRun, SweepRun.id == SweepRunModel.run_id)
+    if exclude_model_runs:
+        # Held by another slot of this worker: never a second copy of the same run.
+        query = query.where(SweepRunModel.id.not_in(exclude_model_runs))
+    if max_vram_mb is not None:
+        query = query.where(
+            SweepRunModel.model_id.in_(
+                _models_fitting(session, max_vram_mb, hardware_profile) or [-1]
+            )
+        )
     if source_keys is not None:
         query = query.where(SweepRun.selection_definition["source_key"].astext.in_(source_keys))
     if hardware_profile:

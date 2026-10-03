@@ -222,7 +222,13 @@ def claim(body: ClaimRequest, session: SessionDep, response: Response) -> ModelR
     srm = _call(
         session,
         lambda: svc.claim(
-            session, worker, body.lease_seconds, body.source_keys, body.hardware_profile
+            session,
+            worker,
+            body.lease_seconds,
+            body.source_keys,
+            body.hardware_profile,
+            body.exclude_model_runs,
+            body.max_vram_mb,
         ),
     )
     if srm is None:

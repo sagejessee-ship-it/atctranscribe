@@ -366,6 +366,14 @@ class SweepModelRead(BaseModel):
     last_error: str | None
     started_at: datetime | None
     completed_at: datetime | None
+    # Live health (running model runs): segments done (spoken + empty + error), the
+    # last recorded result, the rate over the last 10 minutes, and a stall flag.
+    processed: int = 0
+    last_result_at: datetime | None = None
+    recent_per_min: float | None = None
+    stalled: bool = False
+    # Remaining wall time for this model run (measured speed on this run, else history).
+    eta_seconds: float | None = None
 
 
 class SweepRead(BaseModel):
@@ -380,6 +388,9 @@ class SweepRead(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     models: list[SweepModelRead]
+    # Sum of the model runs' remaining time; `eta_partial` when some have no estimate.
+    eta_seconds: float | None = None
+    eta_partial: bool = False
 
 
 # --- worker protocol ------------------------------------------------------------------
@@ -393,6 +404,11 @@ class ClaimRequest(BaseModel):
     source_keys: list[str] | None = None
     # Models recorded as blocked on this profile (oom, unsupported...) are skipped.
     hardware_profile: str | None = None
+    # Concurrent slots on one worker: model runs the worker's other slots hold (never
+    # handed to this slot), and the GPU memory this slot may use (only models whose
+    # estimated footprint fits are offered).
+    exclude_model_runs: list[int] = Field(default_factory=list)
+    max_vram_mb: int | None = Field(default=None, ge=0)
 
 
 class ModelRunClaim(BaseModel):

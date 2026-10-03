@@ -66,7 +66,12 @@ class ApiClient:
     ) -> None:
         if http is None and base_url is None:
             raise ValueError("base_url or http is required")
-        self._http = http or httpx.Client(base_url=base_url, timeout=timeout)
+        # Idle connections are dropped well before the API's 5 s keep-alive (uvicorn's
+        # default), so a request never goes out on a connection the server is closing
+        # ("Server disconnected without sending a response").
+        self._http = http or httpx.Client(
+            base_url=base_url, timeout=timeout, limits=httpx.Limits(keepalive_expiry=2.0)
+        )
 
     def close(self) -> None:
         self._http.close()

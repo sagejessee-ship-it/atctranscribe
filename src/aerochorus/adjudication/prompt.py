@@ -284,3 +284,79 @@ def estimate_item_cost(
     typical = input_cost + TYPICAL_OUTPUT_TOKENS[effort] * pricing["completion"] / 1e6
     worst = input_cost * 1.25 + MAX_TOKENS[effort] * pricing["completion"] / 1e6
     return typical, worst
+
+
+# --- a short prompt for pasting into a chat UI (small manual experiments) ---------------
+
+CHAT_HEAD = (
+    "You're transcribing an air traffic control radio clip (attached) for a "
+    "speech-recognition training set. The audio is the authority. The machine "
+    'transcripts below are hints that may be wrong, empty, or made up (like "thank you" '
+    "on noise), so don't copy anything the audio doesn't support. Use the airport and "
+    "traffic info only to settle words you can hear but can't quite make out."
+)
+CHAT_TAIL = """\
+Write the transcript in lowercase words with no punctuation. Write numbers and letters \
+as spoken ("runway three three left", "one two one point niner", "alpha"). Leave out \
+"uh" and "um". Write [unk] for any word you can't make out. If there's no speech, say so.
+
+Then give:
+- your confidence (0-1) that it's exactly right;
+- any words you're unsure of;
+- the callsigns you heard;
+- which machine transcript was closest;
+- one line on anything odd (overlap, clipped start)."""
+
+
+def render_chat_prompt(bundle: dict[str, Any]) -> str:
+    """The short, chat-ready prompt for one clip, filled with its data (paste + attach)."""
+    seg = bundle.get("segment") or {}
+    where = " ".join(
+        str(v)
+        for v in (
+            seg.get("airport") or seg.get("station"),
+            seg.get("service") or seg.get("channel"),
+        )
+        if v
+    )
+    parts = [where or "unknown station"]
+    if seg.get("frequency_mhz"):
+        parts.append(f"{seg['frequency_mhz']:.3f} MHz")
+    when = seg.get("utc") or "time unknown"
+    if seg.get("local"):
+        when += f" (local {seg['local']})"
+    parts += [when, f"{seg.get('duration_s', '?')} seconds"]
+    lines = [CHAT_HEAD, "", f"Clip: {', '.join(parts)}.", "", "Machine transcripts:"]
+    hyps = bundle.get("hypotheses") or []
+    for i, h in enumerate(hyps, 1):
+        lines.append(f"{i}. {h['model']}: {_q(h.get('text'))}")
+    if not hyps:
+        lines.append("(none: transcribe from the audio alone)")
+    if bundle.get("abstained"):
+        lines.append(f"No speech detected by: {', '.join(bundle['abstained'])}.")
+    airport = bundle.get("airport")
+    if airport:
+        pairs: list[str] = []
+        for r in airport.get("runways", []):
+            pair = r.get("pair") or r["end"]
+            if pair not in pairs:
+                pairs.append(pair)
+        runways = f" Runways {', '.join(pairs)}." if pairs else ""
+        lines += ["", f"Airport: {airport.get('name')} ({airport.get('icao')}).{runways}"]
+    adsb = bundle.get("adsb")
+    if adsb and adsb.get("aircraft"):
+        seen = []
+        for a in adsb["aircraft"][:10]:
+            name = a.get("callsign") or a.get("icao24")
+            label = f"{name} = {a['telephony']}" if a.get("telephony") else str(name)
+            if a.get("on_ground"):
+                state = "on the ground"
+            else:
+                alt, vs = a.get("alt_ft"), a.get("vs_fpm") or 0
+                trend = ", climbing" if vs >= 300 else ", descending" if vs <= -300 else ""
+                state = f"{alt:,} ft{trend}" if isinstance(alt, int | float) else "altitude unknown"
+            dist = a.get("distance_nm")
+            seen.append(f"{label}, {state}" + (f", {dist} nm" if dist is not None else ""))
+        lines += ["", f"Aircraft nearby: {'; '.join(seen)}."]
+    lines += ["", CHAT_TAIL]
+    return "\n".join(lines)

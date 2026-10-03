@@ -181,3 +181,28 @@ def test_public_price_list_is_per_million_tokens():
 
 def test_control_plane_settings_hold_no_openrouter_key():
     assert not any("openrouter_api_key" in name for name in ControlPlaneSettings.model_fields)
+
+
+def test_chat_prompt_is_short_and_filled_with_the_clip():
+    from aerochorus.adjudication.prompt import render_chat_prompt
+
+    bundle = BUNDLE | {
+        "airport": BUNDLE["airport"]
+        | {
+            "runways": [
+                {"end": "15R", "pair": "15R/33L", "spoken": []},
+                {"end": "33L", "pair": "15R/33L", "spoken": []},
+            ]
+        }
+    }
+    text = render_chat_prompt(bundle)
+    assert text.startswith("You're transcribing an air traffic control radio clip (attached)")
+    assert (
+        "Clip: KBWI Tower, 119.400 MHz, 2026-09-08 13:00:05Z (local 09:00:05), 4.2 seconds." in text
+    )
+    assert '1. parakeet-a: "southwest four five six cleared"' in text
+    assert "No speech detected by: canary-a." in text
+    assert "Runways 15R/33L." in text
+    assert "SWA456 = Southwest 456, 1,200 ft, descending, 3.1 nm" in text
+    assert "Write [unk] for any word you can't make out." in text
+    assert "NOT in this clip" not in text  # the short form leaves neighbours out

@@ -80,6 +80,12 @@ class TranscriptionConfig(BaseModel):
     pending_batch: int = Field(default=25, ge=1, le=1000)
     # Download a missing model when a sweep needs it (otherwise: `worker models pull`).
     auto_pull_models: bool = False
+    # Models transcribing at the same time on this GPU (`worker run`). A second one starts
+    # only when its estimated footprint fits in free GPU memory minus the headroom, and
+    # only while the other slot's model is fully loaded. Each slot runs its own CrispASR
+    # server on host_port + slot.
+    max_concurrent_models: int = Field(default=1, ge=1, le=2)
+    vram_headroom_mb: int = Field(default=1500, ge=0)
     # Per-model memory/offload settings, keyed by logical model name.
     model_runtime: dict[str, ModelRuntime] = Field(default_factory=dict)
 
