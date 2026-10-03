@@ -81,7 +81,11 @@ def run(
 
             registry = SlotRegistry()
             sweeper = SweepWorker(client, config, stop=stop, registry=registry)
-            log.info("processing queued sweeps with %s", config.transcription.crispasr.launcher)
+            log.info(
+                "processing queued sweeps with %s, up to %s model(s) at once",
+                config.transcription.crispasr.launcher,
+                config.transcription.max_concurrent_models,
+            )
             for slot in range(1, config.transcription.max_concurrent_models):
                 threading.Thread(
                     target=_extra_slot,

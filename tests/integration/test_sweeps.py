@@ -663,6 +663,7 @@ def test_two_slots_transcribe_two_models_at_once(api, db, lab, monkeypatch):
     first.run_until_idle(max_model_runs=0)  # register the worker
     second = sweeper(api, lab, FakeLauncher(script=slow))
     second.slot, second.registry = 1, registry
+    assert second.process_next() is None  # an extra slot never starts a model on its own
     registry.hold(0, 999_999)  # slot 0 is loading a model: its memory is not visible yet
     assert second.process_next() is None  # so slot 1 waits instead of over-committing
     registry.release(0)

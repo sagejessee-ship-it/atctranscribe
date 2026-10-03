@@ -185,7 +185,9 @@ class SweepWorker:
         when this slot should not start anything now."""
         others = self.registry.others(self.slot)
         if not others:
-            return [], None  # alone on the GPU: whatever comes next, as always
+            # Alone on the GPU: the first slot takes whatever comes next, as always. An
+            # extra slot only ever joins a model that is already running.
+            return ([], None) if self.slot == 0 else None
         if not all(loaded for _, loaded in others):
             return None  # another model is still loading: its memory is not visible yet
         free = hardware.gpu_memory_free_mb()

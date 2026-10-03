@@ -984,6 +984,11 @@ so only when the second one fits in **free** GPU memory minus `vram_headroom_mb`
 (1,500 MB by default), and only while the first is fully loaded. Each model gets
 its own CrispASR server on `host_port` + 1.
 
+At startup the worker logs `processing queued sweeps with docker, up to 2 model(s)
+at once`. If it says 1, the setting is not in the config file the worker read.
+Edit `%APPDATA%\aerochorus\worker.toml` in your own editor: edits made from inside
+the Claude desktop app land in a private copy the worker never sees.
+
 The footprint comes from qualification measurements when they exist, otherwise
 from the model file size plus about 0.7 GB. Anything else on the GPU counts,
 including a game, so nothing extra starts while one is running. A fast model
