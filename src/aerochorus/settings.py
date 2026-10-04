@@ -23,13 +23,18 @@ class ControlPlaneSettings(BaseSettings):
     # OpenSky REST API client (account page -> API client): OAuth2 client credentials.
     opensky_client_id: str | None = None
     opensky_client_secret: SecretStr | None = None
-    # auto: Trino (historical state vectors) when access works, else REST tracks.
+    # auto/local: airport-area ADS-B imported per day from adsb.lol (ADR-024).
+    # opensky: Trino (historical state vectors) when access works, else REST tracks.
+    # trino / rest: only that OpenSky interface.
     adsb_provider: str = "auto"
     adsb_rest_max_tracks: int = 8
     opensky_timeout_s: float = 120.0
     adsb_window_before_s: int = 60
     adsb_window_after_s: int = 60
-    adsb_radius_nm: float = 10.0
+    adsb_radius_nm: float = 20.0
+    # The area kept when a day is imported from adsb.lol (~20 MB per day at 25 nm).
+    adsb_airport: str = "KBWI"
+    adsb_import_radius_nm: float = 25.0
     # Model adjudication (ADR-022). The control plane plans, prices and records batches;
     # it never holds the OpenRouter key (the runner, where the audio lives, does).
     adjudication_model: str = "~google/gemini-pro-latest"

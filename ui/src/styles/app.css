@@ -1253,6 +1253,16 @@ a {
 .adsb td {
   white-space: nowrap;
 }
+.adsb__import {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  font-size: var(--text-sm);
+}
+.adsb__import .bar {
+  max-width: 420px;
+  margin: var(--space-2) 0;
+}
 
 /* --- transcribe page -------------------------------------------------------------------- */
 

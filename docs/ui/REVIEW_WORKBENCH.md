@@ -106,16 +106,25 @@ The inspector sections, top to bottom:
       marked), FAA Class B/C/D airspace with sectional-style
       ceiling/floor labels, range rings, north arrow and scale bar, at
       5/10/20/30 nm. It works without ADS-B. It is not for navigation.
-    - **Traffic**: "Fetch ADS-B context" queries OpenSky for this segment's
-      UTC ±60 s within 10 nm. Aircraft appear on the map with heading, a
-      data block (altitude ×100 ft, climb/descent, speed ×10 kt) and tracks:
-      solid before the segment start, dashed after. Ground traffic is muted
-      and named on hover. Hovering a table row highlights the aircraft, and
-      back. Reopening uses the cached snapshot; "Refresh context" queries
-      again.
-    - If credentials are not configured, the panel says so and everything
-      else works. See [OPENSKY_PROVIDER.md](../context/OPENSKY_PROVIDER.md)
-      and [AIRPORT_PROFILE.md](../context/AIRPORT_PROFILE.md).
+    - **Traffic** comes from the local adsb.lol store
+      ([ADR-024](../adr/0024-local-adsb-from-adsblol.md)):
+      - If the segment's UTC day isn't imported yet, the panel offers
+        **Import <day> from adsb.lol**: about 3.5 GB to download, a few
+        minutes, and only the positions within 25 nm are kept. It then shows
+        the import's progress.
+      - Once the day is imported, opening the panel shows the traffic
+        straight away: every aircraft adsb.lol saw within the segment's
+        UTC ±60 s and 20 nm, with its type.
+    - Aircraft appear on the map with heading, a data block (altitude
+      ×100 ft, climb/descent, speed ×10 kt) and tracks: solid before the
+      segment start, dashed after.
+    - Ground traffic is muted and named on hover. Hovering a table row
+      highlights the aircraft on the map, and back.
+    - Reopening uses the cached snapshot; "Refresh context" queries again.
+    - With `AEROCHORUS_ADSB_PROVIDER=opensky`, "Fetch ADS-B context" queries
+      OpenSky instead, as before. See
+      [OPENSKY_PROVIDER.md](../context/OPENSKY_PROVIDER.md) and
+      [AIRPORT_PROFILE.md](../context/AIRPORT_PROFILE.md).
 
 ## Filters and search (all server-side)
 

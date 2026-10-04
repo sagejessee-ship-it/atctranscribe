@@ -420,6 +420,26 @@ export interface AdsbAircraft {
   vertical_rate_fpm: number | null;
   on_ground: boolean | null;
   squawk: string | null;
+  /** From the adsb.lol aircraft database, when the local store answered. */
+  type_code?: string | null;
+  registration?: string | null;
+}
+
+/** One UTC day of the local adsb.lol store (src/aerochorus/api/adsb_local.py). */
+export interface AdsbDay {
+  day: string;
+  status: "queued" | "importing" | "ready" | "failed" | "not_imported";
+  source: string | null;
+  release: string | null;
+  radius_nm: number | null;
+  bytes_total: number | null;
+  bytes_read: number;
+  aircraft: number;
+  positions: number;
+  error: string | null;
+  requested_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export interface AdsbSnapshot {
@@ -449,4 +469,7 @@ export interface AdsbStatus {
   window_after_s: number;
   radius_nm: number;
   snapshot: AdsbSnapshot | null;
+  /** The local adsb.lol store: the segment's days can be imported on request. */
+  importable: boolean;
+  days: AdsbDay[];
 }

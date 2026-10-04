@@ -1,5 +1,9 @@
 # OpenSky ADS-B context provider
 
+> Since 2026-10-04 the default ADS-B source is the local adsb.lol store
+> ([ADR-024](../adr/0024-local-adsb-from-adsblol.md)). OpenSky is used only
+> with `AEROCHORUS_ADSB_PROVIDER=opensky` (or `trino` / `rest`).
+
 ADS-B context helps an annotator check a callsign or an aircraft's state near
 the moment of a transmission. It is **context only**: it never changes a
 transcript or a label. It is fetched **on demand**, never in bulk. The decision
@@ -71,7 +75,8 @@ cap matters.
 
 | value | behaviour |
 | --- | --- |
-| `auto` (default) | Trino when it works. If Trino is unavailable (access not granted, rejected), falls back to REST when client credentials are set. The snapshot's metadata records the provider used and why it fell back. |
+| `auto` (default) | The local adsb.lol store (ADR-024), not OpenSky |
+| `opensky` | Trino when it works. If Trino is unavailable (access not granted, rejected), falls back to REST when client credentials are set. The snapshot's metadata records the provider used and why it fell back. |
 | `trino` | Trino only |
 | `rest` | REST only |
 

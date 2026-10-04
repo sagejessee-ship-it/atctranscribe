@@ -790,9 +790,44 @@ uv run aerochorus models qualify <name> smoke --passed --evidence '{"sweep": 12}
 uv run aerochorus models set <name> --eligible                    # refused until all 7 gates pass
 ```
 
-### ADS-B context (Phase 5C, optional)
+### ADS-B context (Phase 5C)
 
-Details: [docs/context/OPENSKY_PROVIDER.md](context/OPENSKY_PROVIDER.md).
+Traffic for the map comes from adsb.lol's daily dumps, imported one UTC day
+at a time and only on request
+([ADR-024](adr/0024-local-adsb-from-adsblol.md)). No account or key is
+needed.
+
+- **In the review UI:** open a segment, then **ADS-B context & map**. If its
+  day isn't imported, click **Import <day> from adsb.lol**. Once the progress
+  bar finishes, the traffic shows.
+- **From the CLI**, for many days (overnight):
+
+  ```bash
+  uv run aerochorus adsb import 2026-09-01 --to 2026-09-30 --follow
+  uv run aerochorus adsb days                     # status, aircraft and positions per day
+  ```
+
+| | |
+| --- | --- |
+| Download | ~3.5 GB per day from GitHub (`adsblol/globe_history_<year>`), streamed, never saved |
+| Time | a few minutes per day, mostly the download; one day at a time |
+| Kept | positions within 25 nm of KBWI, ~20 MB per day in the database |
+| Available | the day after: adsb.lol publishes a day once it has ended (UTC) |
+| Licence | ODbL 1.0, adsb.lol contributors (shown with every snapshot) |
+
+The importer runs inside the API container as its own process. Its log lines
+(`adsb 2026-09-26: … aircraft, … positions`) appear in
+`docker compose logs api`. A failed day shows its error in the panel and in
+`adsb days`, and importing it again retries.
+
+Settings (in `.env`, then `docker compose up -d --force-recreate api`):
+`AEROCHORUS_ADSB_AIRPORT` (KBWI), `AEROCHORUS_ADSB_IMPORT_RADIUS_NM` (25),
+`AEROCHORUS_ADSB_RADIUS_NM` (20, the segment query),
+`AEROCHORUS_ADSB_WINDOW_BEFORE_S` / `_AFTER_S` (60).
+
+**OpenSky (optional, off by default).** Details:
+[docs/context/OPENSKY_PROVIDER.md](context/OPENSKY_PROVIDER.md). Set
+`AEROCHORUS_ADSB_PROVIDER=opensky` to use it instead of the local store.
 
 ```bash
 # ./.env (gitignored) — read by docker compose for the api service
@@ -939,23 +974,20 @@ Agreement is computed as results arrive. Useful starting points on the
 ### 14.6 ADS-B context and the map
 
 Open a segment, then **ADS-B context & map**. The map (runways, Class B/D
-airspace) shows without any fetch. **Fetch ADS-B context** adds traffic.
+airspace) shows straight away. For traffic, import the segment's UTC day once
+from adsb.lol: click **Import <day> from adsb.lol** in the panel. It takes a
+few minutes (about 3.5 GB to download), and the progress shows in the panel.
+After that, every segment that day shows its traffic as soon as the panel is
+opened: all aircraft within 20 nm, with type, altitude, speed and trails.
 
-Until OpenSky grants Trino access, fetches use the REST API client from
-`.env`:
+To prepare a whole month in one go, for example overnight:
 
-- **Coverage**: KBWI arrivals and departures only, with positions
-  interpolated from their tracks. Flights are published after a nightly
-  batch, so use days before today.
-- **Cost**: each REST call costs 30 of the account's daily credits.
-  AeroChorus caches each day's flight lists and each flight's track in the
-  API process, so browsing segments on the same day gets cheap after the
-  first fetch. The provenance line shows the credits left.
-- **Limit**: on 2026-09-27 the daily allowance ran out after about 18
-  calls. When it does, the panel says when the credits come back. Cached
-  snapshots keep working.
+```powershell
+uv run aerochorus adsb import 2026-09-01 --to 2026-09-30 --follow
+```
 
-Snapshots are cached per segment, so reopening a segment costs nothing.
+Days are available the day after they end (UTC). Details are in §13, *ADS-B
+context*.
 
 ### 14.7 Optional: adjudicate a few segments (paid)
 

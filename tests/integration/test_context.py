@@ -77,7 +77,7 @@ def test_fetch_is_explicit_bounded_cached_and_refreshable(app, http, segment_id)
     first = http.post(f"/api/v1/context/adsb/{segment_id}").json()
     assert len(provider.queries) == 1 and first["cached"] is False
     q = provider.queries[0]
-    assert q.t_end - q.t_start == 120 and q.radius_nm == 10 and q.hours
+    assert q.t_end - q.t_start == 120 and q.radius_nm == 20 and q.hours
     assert first["source"] == "minio.osky.state_vectors_data4"
     assert first["query"]["airport"] == "KBWI" and "hour IN" in first["query"]["sql"]
     assert first["aircraft"][0]["callsign"] == "SWA456" and first["aircraft"][0]["offset_s"] == 3

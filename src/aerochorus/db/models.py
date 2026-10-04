@@ -7,21 +7,25 @@ and the database.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    REAL,
     BigInteger,
     Boolean,
     CheckConstraint,
+    Column,
+    Date,
     DateTime,
     Double,
     ForeignKey,
     Identity,
     Index,
     Integer,
+    Table,
     Text,
     UniqueConstraint,
     func,
@@ -33,6 +37,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from aerochorus.adjudication_contracts import BatchStatus as AdjudicationBatchStatus
 from aerochorus.adjudication_contracts import ItemStatus as AdjudicationItemStatus
+from aerochorus.context.adsblol import DayStatus as AdsbDayStatus
 from aerochorus.contracts import (
     IntegrityStatus,
     PresenceStatus,
@@ -908,6 +913,67 @@ class ContextSnapshot(Base):
         CheckConstraint("t_end > t_start", name="window"),
         Index("ix_context_snapshot_segment", "segment_id", "kind", "fetched_at"),
     )
+
+
+class AdsbDay(Base):
+    """One UTC day of airport-area ADS-B imported from adsb.lol, on request (ADR-024)."""
+
+    __tablename__ = "adsb_day"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    status: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text)
+    release: Mapped[str | None] = mapped_column(Text)  # the adsb.lol tag actually read
+    center_lat: Mapped[float] = mapped_column(Double)
+    center_lon: Mapped[float] = mapped_column(Double)
+    radius_nm: Mapped[float] = mapped_column(Double)
+    bytes_total: Mapped[int | None] = mapped_column(BigInteger)
+    bytes_read: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    aircraft: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    positions: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = _created_at()
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint(_in("status", AdsbDayStatus), name="status"),)
+
+
+# A position inside an imported area (ADR-024). Written in bulk and read with SQL only, so a
+# plain table: no primary key, and BRIN indexes, since a day's rows are written in time order.
+adsb_position = Table(
+    "adsb_position",
+    Base.metadata,
+    Column("day", Date, ForeignKey("adsb_day.day", ondelete="CASCADE"), nullable=False),
+    Column("t", BigInteger, nullable=False),  # unix seconds
+    Column("icao24", Text, nullable=False),
+    Column("callsign", Text),
+    Column("lat", REAL, nullable=False),
+    Column("lon", REAL, nullable=False),
+    Column("alt_ft", Integer),  # None on the ground
+    Column("on_ground", Boolean, nullable=False, server_default=_FALSE),
+    Column("gs_kt", REAL),
+    Column("track_deg", REAL),
+    Column("vrate_fpm", Integer),
+    Index(
+        "ix_adsb_position_t", "t", postgresql_using="brin", postgresql_with={"pages_per_range": 16}
+    ),
+    Index("ix_adsb_position_day", "day", postgresql_using="brin"),
+)
+
+
+class AdsbAircraft(Base):
+    """Registration and type of an aircraft seen in an imported day."""
+
+    __tablename__ = "adsb_aircraft"
+
+    day: Mapped[date] = mapped_column(
+        ForeignKey("adsb_day.day", ondelete="CASCADE"), primary_key=True
+    )
+    icao24: Mapped[str] = mapped_column(Text, primary_key=True)
+    registration: Mapped[str | None] = mapped_column(Text)
+    type_code: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
 
 
 # --- hardware-profile qualification (ADR-021) ------------------------------------------------

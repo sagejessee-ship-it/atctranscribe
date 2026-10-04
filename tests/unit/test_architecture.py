@@ -107,7 +107,8 @@ def test_source_audio_cannot_be_modified():
                 for kw in node.keywords:
                     if kw.arg == "mode":
                         mode = kw.value
-                if not (isinstance(mode, ast.Constant) and set(mode.value) <= {"r", "b"}):
+                # "r|" is tarfile's read-only streaming mode.
+                if not (isinstance(mode, ast.Constant) and set(mode.value) <= {"r", "b", "|"}):
                     violations.append(f"{path.name}:{node.lineno} opens without a read mode")
     assert not violations, violations
     assert "fs.py" not in WRITERS and "scanner.py" not in WRITERS

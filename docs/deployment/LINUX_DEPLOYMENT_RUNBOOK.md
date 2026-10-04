@@ -107,7 +107,7 @@ It ends with the review UI address.
 | --- | --- | --- |
 | `postgres` | PostgreSQL 17, data in `/srv/aerochorus/postgres` | 127.0.0.1:5432 only |
 | `migrate` | applies migrations, then exits | — |
-| `api` | control plane (FastAPI) | 127.0.0.1:8000 |
+| `api` | control plane (FastAPI); runs the adsb.lol day importer when asked (ADR-024) | 127.0.0.1:8000; outbound HTTPS to github.com for ADS-B imports |
 | `edge` | **review web UI**, API proxy, read-only sha256-checked audio | **LAN :8080** |
 | `worker` | scans, heartbeats, queued sweeps; CrispASR on the GPU, one model at a time | — |
 | `backup` | nightly `pg_dump` at 03:00 into `/srv/aerochorus/backups` | — |

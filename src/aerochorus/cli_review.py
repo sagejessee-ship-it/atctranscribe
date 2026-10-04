@@ -121,6 +121,47 @@ def cmd_agreement_refresh(args: argparse.Namespace) -> int:
     return 0
 
 
+def _day_line(d: dict) -> str:
+    total, read = d.get("bytes_total"), d.get("bytes_read") or 0
+    size = f"{read / 2**30:.1f}/{total / 2**30:.1f} GB" if total else ""
+    found = f"{d['aircraft']} aircraft, {d['positions']} positions" if d.get("aircraft") else ""
+    detail = d.get("error") or ", ".join(x for x in (found, size) if x)
+    return f"{d['day']}  {d['status']:<10} {detail}"
+
+
+def cmd_adsb_import(args: argparse.Namespace) -> int:
+    import time
+
+    with _client(args) as client:
+        days = client.adsb_import(args.start, args.to)
+        print(f"queued {len(days)} day(s); each is a ~3.5 GB download from adsb.lol")
+        if not args.follow:
+            return 0
+        wanted = {d["day"] for d in days}
+        while True:
+            current = [d for d in client.adsb_days(min(wanted), max(wanted)) if d["day"] in wanted]
+            active = [d for d in current if d["status"] in ("queued", "importing")]
+            for d in current:
+                if d["status"] == "importing":
+                    print(_day_line(d), flush=True)
+            if not active:
+                break
+            time.sleep(15)
+        for d in current:
+            print(_day_line(d))
+        return 0 if all(d["status"] == "ready" for d in current) else 2
+
+
+def cmd_adsb_days(args: argparse.Namespace) -> int:
+    with _client(args) as client:
+        days = client.adsb_days(args.start, args.to)
+    for d in days:
+        print(_day_line(d))
+    if not days:
+        print("no ADS-B days imported yet (aerochorus adsb import <day>)")
+    return 0
+
+
 def cmd_source_set_role(args: argparse.Namespace) -> int:
     with _client(args) as client:
         source = client.set_source_role(args.key, args.role)
@@ -289,6 +330,21 @@ def register(groups, api_opt) -> None:
     p.add_argument("--chunk", type=int, default=5000, help="segments per API call")
     api_opt(p)
     p.set_defaults(func=cmd_agreement_refresh)
+
+    adsb = groups.add_parser(
+        "adsb", help="airport-area ADS-B from adsb.lol (imported per day)"
+    ).add_subparsers(dest="cmd", required=True)
+    p = adsb.add_parser("import", help="queue days for import (~3.5 GB download each)")
+    p.add_argument("start", help="first UTC day, YYYY-MM-DD")
+    p.add_argument("--to", help="last UTC day (inclusive); default: just the first")
+    p.add_argument("--follow", action="store_true", help="wait and show progress until done")
+    api_opt(p)
+    p.set_defaults(func=cmd_adsb_import)
+    p = adsb.add_parser("days", help="imported and queued days")
+    p.add_argument("--from", dest="start")
+    p.add_argument("--to")
+    api_opt(p)
+    p.set_defaults(func=cmd_adsb_days)
 
     ui = groups.add_parser("ui", help="review workbench").add_subparsers(dest="cmd", required=True)
     p = ui.add_parser(
