@@ -34,54 +34,71 @@ long-term host is the Linux desktop with the GTX 1070, running containers only
 ## Start here: starting AeroChorus after a restart
 
 Everything is already set up on this PC: the database, models, worker config
-and the saved NAS login. After a restart, one command brings the whole system
-back. Run it in a normal PowerShell window (Start menu → PowerShell); it works
-from any folder:
+and the saved NAS login. One command starts whatever isn't running. Open
+PowerShell (Start menu → PowerShell, or PyCharm's terminal), then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\sagej\Projects\atctranscribe\deploy\windows\start-aerochorus.ps1
+cd C:\Users\sagej\Projects\atctranscribe
+.\start-aerochorus.ps1
 ```
 
-It does four things, in order:
+Run `.\start-aerochorus.ps1 -Check` to see what's running without starting
+anything.
 
-1. **Docker Desktop:** starts it if it isn't running and waits for it. Then
-   it brings up Postgres and the API (`docker compose up -d`) and waits for
-   `http://127.0.0.1:8000/health`.
-2. **Review UI:** opens it in its own window at <http://127.0.0.1:8080>
-   (Review, Transcribe and Adjudication pages).
+It goes through four steps, and skips any piece that is already up:
+
+1. **Docker Desktop:** started if needed. Then Postgres and the API
+   (`docker compose up -d`).
+2. **Review UI:** <http://127.0.0.1:8080> (Review, Transcribe and
+   Adjudication pages). It opens its own window titled *AeroChorus review UI
+   (leave open)*. That window restarts the UI if it ever stops, and logs to
+   `%USERPROFILE%\aerochorus-data\logs\ui-<date>.log`.
 3. **Archive share:** checks that the worker can read it, and says what to do
    if it can't.
-4. **Worker:** runs the worker loop in the same window. Leave that window
-   open. The loop restarts the worker if it ever exits and logs to
-   `%USERPROFILE%\aerochorus-data\logs\worker-<date>.log`.
+4. **Worker:** runs in the window you started the script from, retitled
+   *AeroChorus worker (leave open)*. It restarts the worker if it ever exits,
+   and logs to `%USERPROFILE%\aerochorus-data\logs\worker-<date>.log`. If a
+   worker is already running, the script leaves it alone and says so.
 
-Running it again is safe: nothing that is already running is started twice.
+Each step prints a green line when it's fine and a yellow line when it isn't.
+The script ends with `Ready. Queue a run on http://127.0.0.1:8080/transcribe`.
 
-A run that was transcribing when the PC went down continues where it stopped.
-A paused run stays paused until you press ▶ on the Transcribe page.
+### What to do when
+
+| Situation | What to do |
+| --- | --- |
+| A run finished and you want another | Queue it on the Transcribe page. The worker that ran the last one is still waiting; it starts the new run within seconds. Nothing needs restarting. |
+| The Transcribe page doesn't load | The review UI isn't running. Run `.\start-aerochorus.ps1`: it starts only what's missing. |
+| The start script says "already running" for the worker | That's fine: the worker picks up new runs by itself. If it says "started by hand", that worker has no restart loop or log file. To fix that, Ctrl-C it in its window and run the script again. |
+| After a Windows restart | Run `.\start-aerochorus.ps1`. A run that was transcribing continues where it stopped. |
+| You need the GPU (e.g. a game) | Pause the run on the Transcribe page (⏸). The model is released within seconds and progress is kept. Press ▶ to continue. |
+| You're not sure what's running | `.\start-aerochorus.ps1 -Check` |
+
+Leave both windows open, and don't type commands into them: each one belongs
+to its process. Double-clicking a `.ps1` file opens it in Notepad instead of
+running it. The script works from any folder with its full path:
+`powershell -ExecutionPolicy Bypass -File C:\Users\sagej\Projects\atctranscribe\start-aerochorus.ps1`.
 
 To check it worked:
 
 - The worker window shows `processing queued sweeps with docker, up to N
-  model(s) at once`. If a run is queued, it then shows `claimed sweep …` and
+  model(s) at once`. When a run is queued, it shows `claimed sweep …` and then
   `… loaded in …`.
 - The Transcribe page shows the worker's heartbeat, and the run's progress
   moves.
 
 ### Starting the pieces by hand
 
+Prefer the script. If you need a piece on its own, run these from the
+repository folder:
+
 | Piece | How | Notes |
 | --- | --- | --- |
 | Docker Desktop | Start menu | Postgres and the API come back with it (`restart: unless-stopped`) |
-| Database + API | `docker compose up -d` | add `--build` after pulling new code; it also applies migrations |
-| Review UI | `.venv\Scripts\aerochorus.exe ui serve` | leave its window open; <http://127.0.0.1:8080> |
-| Worker | `powershell -ExecutionPolicy Bypass -File deploy\windows\run-worker.ps1` | restarts the worker if it exits; don't also run `worker transcribe` |
+| Database + API | `docker compose up -d` | add `--build` after pulling new code; it also applies migrations. Don't `docker run` the images by hand: that starts an extra copy nobody can reach |
+| Review UI | `powershell -ExecutionPolicy Bypass -File deploy\windows\run-ui.ps1` | its own window; restarts the UI if it exits |
+| Worker | `powershell -ExecutionPolicy Bypass -File deploy\windows\run-worker.ps1` | restarts the worker if it exits; only one worker at a time; don't also run `worker transcribe` |
 | Adjudicator (optional, paid) | `.venv\Scripts\aerochorus.exe adjudicate run --follow` | only while sending adjudication batches (§13) |
-
-Run these from the repository folder: paths like `deploy\windows\…` are
-relative to it. From anywhere else, use the full path, as in the one-command
-start above. Double-clicking a `.ps1` file opens it in Notepad instead of
-running it.
 
 ### The archive share
 
@@ -703,8 +720,8 @@ Until then, this PC runs everything (see
 | `/health` → `degraded`, `migrations_current: false` | Code and database disagree. `docker compose up -d --build` (runs `migrate`). |
 | `worker health` → source `available: false` | Share unmounted or unreachable. Remount; scans report `source_unavailable` and change nothing meanwhile. |
 | Worker logs `source home_atc_archive unavailable (… user name or password is incorrect …)` | The NAS login lapsed. Open `\\192.168.68.84\bwi` in File Explorer, sign in, tick **Remember my credentials**. The worker waits meanwhile and continues by itself. |
-| `run-worker.ps1` does nothing, or "The argument … to the -File parameter does not exist" | It was run from another folder (PowerShell opens in your home folder). Use the full path, or the start script ([Start here](#start-here-starting-aerochorus-after-a-restart)). Double-clicking a `.ps1` only opens it in Notepad. |
-| <http://127.0.0.1:8080> doesn't load | The review UI isn't running. Start it with the start script, or `.venv\Scripts\aerochorus.exe ui serve` from the repository folder. |
+| A script "does nothing", "is not recognized", or "The argument … to the -File parameter does not exist" | It was run from another folder (PowerShell opens in your home folder). `cd C:\Users\sagej\Projects\atctranscribe` first, then `.\start-aerochorus.ps1`. Double-clicking a `.ps1` only opens it in Notepad. |
+| <http://127.0.0.1:8080> doesn't load | The review UI isn't running. `.\start-aerochorus.ps1` starts it, and nothing that is already running. Why it stopped is in `logs\ui-<date>.log`. |
 | Worker log says `up to 1 model(s) at once` but you set 2 | The worker read a config without the setting. Edit `%APPDATA%\aerochorus\worker.toml` in your own editor; edits made from inside the Claude desktop app go to a private copy (§14.8). |
 | `sweep create` → 409 "not sweep-eligible" | Qualify the models (§8) or add `--allow-unqualified` for a smoke/qualification sweep. |
 | model run `failed`: "does not match the registered size/sha256" | Corrupt or partial model file. `worker models pull <name>` re-downloads and verifies it. |
