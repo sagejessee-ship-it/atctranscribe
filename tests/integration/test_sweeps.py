@@ -27,7 +27,7 @@ from aerochorus.sweep_contracts import (
 from aerochorus.worker.artifacts import ArtifactStore
 from aerochorus.worker.client import ApiError
 from aerochorus.worker.config import SourceMount, TranscriptionConfig, WorkerConfig
-from aerochorus.worker.crispasr import TranscribeResponse
+from aerochorus.worker.crispasr import CrispAsrError, TranscribeResponse
 from aerochorus.worker.transcriber import SweepWorker
 
 SEGMENTS = 7
@@ -352,6 +352,59 @@ def test_segment_errors_are_recorded_then_retried(api, db, lab):
     assert state.models[0].segments_completed == 4
     assert state.models[1].segments_error == 1
     assert result_count(db) == 8
+
+
+def test_a_retry_is_smoke_tested_on_a_fresh_segment_not_on_earlier_failures(api, db, lab):
+    # A retry is handed the segments that failed before first (lowest ordinals). The
+    # model fails on them again, which says nothing new about the server (sweep 12,
+    # glm-asr: three of them in a row failed every retry's smoke test).
+    unanswerable: set[str] = set()
+
+    def garbled(filename, params, server):
+        if filename in unanswerable:
+            return TranscribeResponse(200, b"not a JSON object", 40)
+        return default_script(filename, params, server)
+
+    def first_attempt(filename, params, server):
+        n = len(server.requests)
+        if n == SEGMENTS:
+            raise CrispAsrError("backend wedged (fake)")  # the run fails, one segment left
+        if n != 2:  # every segment but the second: more failures in a row than either limit
+            unanswerable.add(filename)
+        return garbled(filename, params, server)
+
+    def broken(filename, params, server):
+        return TranscribeResponse(500, b'{"error": "boom"}', 5)
+
+    sweep = new_sweep(api)
+
+    def alpha():
+        return api.get_sweep(sweep.id).models[0]
+
+    outcomes = sweeper(api, lab, FakeLauncher(script=first_attempt)).run_until_idle(1)
+    assert outcomes[0].status == "failed"
+    assert (alpha().segments_error, alpha().segments_completed) == (5, 1)
+
+    # A broken server is still caught, by the smoke test on the fresh segment.
+    api.control_sweep(sweep.id, "retry", model="alpha-model")
+    outcomes = sweeper(api, lab, FakeLauncher(script=broken)).run_until_idle(1)
+    assert outcomes[0].status == "failed" and "smoke" in outcomes[0].message
+    assert (alpha().segments_error, alpha().segments_completed) == (5, 1)
+
+    # A working server: the old failures are recorded again, the rest completes.
+    api.control_sweep(sweep.id, "retry", model="alpha-model")
+    outcomes = sweeper(api, lab, FakeLauncher(script=garbled)).run_until_idle(1)
+    assert [(o.model, o.status, o.processed) for o in outcomes] == [("alpha-model", "completed", 6)]
+    done = alpha()
+    assert (done.segments_error, done.segments_completed, done.attempts) == (5, 2, 3)
+    db.expire_all()
+    errors = db.execute(
+        select(TranscriptionResult.error_type, TranscriptionResult.attempt).where(
+            TranscriptionResult.sweep_run_model_id == done.id,
+            TranscriptionResult.status == "error",
+        )
+    ).all()
+    assert sorted(errors) == [("invalid_response", 3)] * 5
 
 
 def test_pause_releases_and_resume_continues(api, db, lab):

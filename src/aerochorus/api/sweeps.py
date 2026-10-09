@@ -833,7 +833,8 @@ def start_model_run(
 def pending(
     session: Session, srm: SweepRunModel, limit: int, after_ordinal: int | None = None
 ) -> PendingBatch:
-    """The next segments without a result (or with an error from an earlier attempt).
+    """The next segments without a result (or with an error from an earlier attempt,
+    marked ``retry``).
 
     ``after_ordinal`` is the worker's cursor within one claim: without it, every call
     would re-scan all segments already done, which grows with the run.
@@ -851,6 +852,7 @@ def pending(
             Segment.sha256,
             Segment.duration_ms,
             SweepRunSegment.ordinal,
+            result.id.is_not(None),
         )
         .select_from(SweepRunSegment)
         .join(Segment, Segment.id == SweepRunSegment.segment_id)
@@ -878,6 +880,7 @@ def pending(
             sha256=r[3],
             duration_ms=r[4],
             ordinal=r[5],
+            retry=r[6],
         )
         for r in rows
     ]

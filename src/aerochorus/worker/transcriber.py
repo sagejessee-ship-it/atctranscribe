@@ -54,7 +54,8 @@ from aerochorus.worker.power import keep_awake
 log = logging.getLogger(__name__)
 
 # Give up on a model run after this many consecutive per-segment failures:
-# something is wrong with the server, not with the audio.
+# something is wrong with the server, not with the audio. A segment that already failed
+# in an earlier attempt (``PendingSegment.retry``) and fails again is not counted.
 MAX_CONSECUTIVE_ERRORS = 5
 # A single segment can crash a CrispASR backend (e.g. a GGML assertion on odd audio).
 # Such a crash costs that segment an error result and the server a restart; after
@@ -62,7 +63,8 @@ MAX_CONSECUTIVE_ERRORS = 5
 MAX_RESTARTS = 3
 # The first request is a smoke test of the server. If it fails, the next segments are
 # tried as the smoke test; after this many the backend is judged broken and the model
-# run fails without recording any results.
+# run fails without recording any results. A retry starts with the segments that failed
+# before; those are recorded as usual and the first fresh segment is the smoke test.
 MAX_SMOKE_SEGMENTS = 3
 # A progress line in the log this often, so a long model run visibly moves.
 PROGRESS_EVERY_S = 300.0
@@ -500,7 +502,9 @@ class SweepWorker:
                     )
                     raise Released("worker stopping")
                 try:
-                    result = self._transcribe(claim, server, runtime, segment, smoke=not smoke_done)
+                    result = self._transcribe(
+                        claim, server, runtime, segment, smoke=not (smoke_done or segment.retry)
+                    )
                 except SmokeFailed as exc:
                     if exc.result is None:
                         raise
@@ -521,7 +525,8 @@ class SweepWorker:
                     held.clear()
                 post(result)
                 if result.status == ResultStatus.ERROR:
-                    consecutive_errors += 1
+                    if not segment.retry:
+                        consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                         raise CrispAsrError(
                             f"{consecutive_errors} consecutive errors; last: "
