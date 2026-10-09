@@ -27,6 +27,15 @@ dev = [
     "ruff>=0.8",
 ]
 
+[tool.uv.sources]
+# Windows dev PC: SQLAlchemy's pure-Python wheel (same release). Smart App Control blocks
+# its compiled .pyd files (unsigned, little reputation), which broke every on-host process
+# that touches the database: tests, the e2e stack (2026-10-09). Linux and the container
+# images keep the compiled wheel.
+sqlalchemy = [
+    { url = "https://files.pythonhosted.org/packages/c5/7a/7d1879d78c086737acee5f3250cbff9d285e5bd7cb6bc2c730f24e8d400e/sqlalchemy-2.1.1-py3-none-any.whl", marker = "sys_platform == 'win32'" },
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
