@@ -133,7 +133,7 @@ The inspector sections, top to bottom:
 | Airport (resolved from station aliases) | `airport` |
 | Channel (normalized at ingest) | `channels` |
 | UTC range | `utc_from`, `utc_to` |
-| Model present, family present | `models`, `families` (JSONB `?|`) |
+| Models / families: **has a result** (any model, voting or not), or **agrees** (in the largest exact group or the near group, each with 2+ families; voting models only). The rail lists models with results, marked voting or not. | `models`, `families`, `model_match` = `result` / `agrees` |
 | Min model results (0 includes untranscribed) | `min_models` (default 1) |
 | Min models that produced words | `min_success` |
 | Min words in the representative text (hides "thank you") | `min_words` |

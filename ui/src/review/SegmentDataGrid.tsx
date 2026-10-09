@@ -15,6 +15,7 @@ import type { ReviewRow, SortKey } from "../api/types";
 import { AgreementBadge, Badge, StatusBadge, TrainingBadge } from "../components/badges";
 import { HighlightedText } from "../components/HighlightedText";
 import { fmtDuration, fmtSim, fmtUtc } from "../lib/format";
+import { columnHelp } from "./glossary";
 
 interface Meta {
   sort?: SortKey;
@@ -141,13 +142,11 @@ const columns: ColumnDef<ReviewRow>[] = [
   { id: "risk", ...meta({ width: "96px", label: "Risk" }), cell: ({ row }) => <RiskCell row={row.original} /> },
 ];
 
-const HEADER_TITLES: Record<string, string> = {
-  results: "model results recorded (latest per model)",
-  exact_providers: "largest exact-match group: number of models",
-  exact_families: "largest exact-match group: independent architecture families",
-  near_families: "near-match group: architecture families within the threshold",
-  near_similarity: "weakest similarity inside the near-match group (not a probability)",
-};
+// Abbreviated headers: dotted underline, full definition on hover (and in the Column guide).
+const ABBREVIATED = new Set(["results", "exact_providers", "exact_families", "near_families", "near_similarity"]);
+const HEADER_TITLES: Record<string, string> = Object.fromEntries(
+  columnHelp(null).map((c) => [c.id, `${c.short} = ${c.name}: ${c.text}`]),
+);
 
 export function SegmentDataGrid({
   rows,
@@ -223,7 +222,7 @@ export function SegmentDataGrid({
                 key={header.id}
                 role="columnheader"
                 aria-sort={active ? (descending ? "descending" : "ascending") : undefined}
-                className={clsx("grid__hcell", m.align && `grid__cell--${m.align}`)}
+                className={clsx("grid__hcell", m.align && `grid__cell--${m.align}`, ABBREVIATED.has(header.id) && "grid__hcell--abbr")}
                 title={HEADER_TITLES[header.id] ?? COLUMN_LABELS[header.id]}
               >
                 {sortable ? (

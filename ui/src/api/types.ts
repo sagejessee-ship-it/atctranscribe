@@ -25,6 +25,8 @@ export interface ReviewFilters {
   utc_to?: string | null;
   models?: string[];
   families?: string[];
+  /** "result": any selected model/family produced a result; "agrees": it is in the agreeing group. */
+  model_match?: "result" | "agrees";
   min_models?: number | null;
   min_success?: number | null;
   min_exact_providers?: number | null;
@@ -136,7 +138,8 @@ export interface Facets {
   sources: { key: string; name: string; role: string }[];
   airports: string[];
   channels: string[];
-  models: { name: string; family: string; enabled: boolean }[];
+  /** voting: agreement is computed from it; results: segments it has a result for. */
+  models: { name: string; family: string; enabled: boolean; voting: boolean; results: number; has_results: boolean }[];
   families: string[];
   flags: string[];
   near_threshold: number;

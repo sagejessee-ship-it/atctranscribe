@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 
 from aerochorus.api import agreement as agreement_svc
 from aerochorus.api import airports as airport_svc
@@ -15,6 +15,8 @@ from aerochorus.db.models import (
     ReviewSample,
     Segment,
     SegmentAgreement,
+    SweepRunModel,
+    TranscriptionResult,
 )
 from aerochorus.review_contracts import (
     AirportProfileIn,
@@ -40,7 +42,8 @@ class Facets(BaseModel):
     sources: list[dict[str, str]]
     airports: list[str]
     channels: list[str]
-    models: list[dict[str, str | bool]]
+    # name, family, enabled, voting (ensemble-eligible), results (run counters), has_results
+    models: list[dict[str, str | bool | int]]
     families: list[str]
     flags: list[str]
     near_threshold: float
@@ -73,6 +76,29 @@ def facets(session: SessionDep) -> Facets:
     flags = session.scalars(
         select(func.jsonb_object_keys(SegmentAgreement.flags)).distinct().order_by(None)
     )
+    # Models with at least one result (an index probe per model run), and how many results
+    # each has recorded according to the run counters (cheap; shown, not filtered on).
+    transcribed = set(
+        session.scalars(
+            select(SweepRunModel.model_id)
+            .where(
+                exists(select(1).where(TranscriptionResult.sweep_run_model_id == SweepRunModel.id))
+            )
+            .distinct()
+        )
+    )
+    results = dict(
+        session.execute(
+            select(
+                SweepRunModel.model_id,
+                func.sum(
+                    SweepRunModel.segments_completed
+                    + SweepRunModel.segments_abstained
+                    + SweepRunModel.segments_error
+                ),
+            ).group_by(SweepRunModel.model_id)
+        ).all()
+    )
     return Facets(
         sources=[
             {"key": s.logical_key, "name": s.name, "role": s.role}
@@ -81,7 +107,14 @@ def facets(session: SessionDep) -> Facets:
         airports=list(session.scalars(select(Airport.icao).order_by(Airport.icao))),
         channels=list(channels),
         models=[
-            {"name": m.logical_name, "family": m.architecture_family, "enabled": m.enabled}
+            {
+                "name": m.logical_name,
+                "family": m.architecture_family,
+                "enabled": m.enabled,
+                "voting": m.ensemble_eligible,
+                "results": int(results.get(m.id) or 0),
+                "has_results": m.id in transcribed,
+            }
             for m in session.scalars(
                 select(Model).order_by(Model.architecture_family, Model.logical_name)
             )

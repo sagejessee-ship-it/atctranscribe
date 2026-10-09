@@ -15,6 +15,8 @@ import { FilterRail } from "./FilterRail";
 import { AdjudicateDialog } from "./AdjudicateDialog";
 import { SampleDialog } from "./SampleDialog";
 import { COLUMN_LABELS, SegmentDataGrid } from "./SegmentDataGrid";
+import { columnHelp } from "./glossary";
+import { HelpTip } from "../components/HelpTip";
 import { PAGE_SIZES, useReviewState } from "./useReviewState";
 
 const TEXT_INPUT = /^(text|search|number|email|url|tel|password|date|datetime-local|time)$/;
@@ -303,6 +305,22 @@ export function ReviewPage({ onHelp }: { onHelp: () => void }) {
                 agreement v{page.data.agreement_version} · near ≥ {page.data.near_threshold}
               </span>
             ) : null}
+            <span className="grid__guide">
+              Column guide
+              <HelpTip label="Column guide" wide>
+                <dl className="glossary">
+                  {columnHelp(page.data?.near_threshold).map((c) => (
+                    <div key={c.id}>
+                      <dt>
+                        {c.short}
+                        {c.short !== c.name ? <span className="muted"> · {c.name}</span> : null}
+                      </dt>
+                      <dd>{c.text}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </HelpTip>
+            </span>
           </div>
         </div>
         {inspectorOpen ? (
