@@ -39,6 +39,8 @@ class FakeServer:
     model_path: Path
     script: Script
     alive: bool = True
+    # Still working on a request the client gave up on (as CrispASR does after a timeout).
+    busy: bool = False
     requests: list[str] = field(default_factory=list)
     describe: dict[str, Any] = field(default_factory=dict)
     fail_startup: bool = False

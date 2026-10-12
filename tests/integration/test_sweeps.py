@@ -506,6 +506,68 @@ def test_a_segment_that_crashes_the_backend_costs_only_that_segment(api, db, lab
     assert errors == ["server_unavailable", "server_unavailable"]
 
 
+def hang(server):
+    """The request outlasts the timeout and the server keeps working on it, so every
+    later request waits behind it (fastconformer on a 16-minute recording)."""
+    server.busy = True
+    raise httpx.ReadTimeout("timed out")
+
+
+@pytest.mark.parametrize("nth", [1, 3], ids=["as-the-smoke-test", "mid-run"])
+def test_a_segment_that_outlasts_the_timeout_costs_only_that_segment(api, db, lab, nth):
+    state = {"requests": 0, "slow": None}
+
+    def script(filename, params, server):
+        state["requests"] += 1
+        if state["slow"] is None and state["requests"] == nth:
+            state["slow"] = filename
+        if server.busy or filename == state["slow"]:
+            hang(server)
+        return default_script(filename, params, server)
+
+    launcher = FakeLauncher(script=script)
+    sweep = new_sweep(api, relative_dir="2026/09/08")
+    outcomes = sweeper(api, lab, launcher).run_until_idle()
+    assert [o.status for o in outcomes] == ["completed", "completed"]
+    done = api.get_sweep(sweep.id)
+    assert [m.segments_error for m in done.models] == [1, 1]  # only the slow segment
+    assert len(launcher.servers) == 4  # each model: started, timed out once, restarted
+    errors = db.scalars(
+        select(TranscriptionResult.error_type).where(TranscriptionResult.status == "error")
+    ).all()
+    assert errors == ["timeout", "timeout"]
+
+
+def test_known_failures_on_a_retry_do_not_use_up_the_restart_budget(api, db, lab, monkeypatch):
+    from aerochorus.worker import transcriber
+
+    monkeypatch.setattr(transcriber, "MAX_RESTARTS", 1)
+    seen: list[str] = []
+
+    def script(filename, params, server):
+        if filename not in seen:
+            seen.append(filename)
+        if server.busy or seen.index(filename) in (1, 3):  # this model never finishes these
+            hang(server)
+        return default_script(filename, params, server)
+
+    sweep = new_sweep(api)
+    outcomes = sweeper(api, lab, FakeLauncher(script=script)).run_until_idle(1)
+    assert outcomes[0].status == "failed" and "restarted 2 times" in outcomes[0].message
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert (alpha.segments_error, alpha.segments_completed) == (2, 2)
+
+    # Both timeouts happen again on the retry and cost a restart each, but they are known
+    # failures: the budget is for new trouble, and the rest of the run completes.
+    api.control_sweep(sweep.id, "retry", model="alpha-model")
+    launcher = FakeLauncher(script=script)
+    outcomes = sweeper(api, lab, launcher).run_until_idle(1)
+    assert [(o.model, o.status) for o in outcomes] == [("alpha-model", "completed")]
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert (alpha.segments_error, alpha.segments_completed) == (2, SEGMENTS - 2)
+    assert len(launcher.servers) == 3
+
+
 def test_a_backend_that_crashes_on_everything_fails_without_results(api, db, lab):
     def always(filename, params, server):
         server.alive = False

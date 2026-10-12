@@ -57,9 +57,12 @@ log = logging.getLogger(__name__)
 # something is wrong with the server, not with the audio. A segment that already failed
 # in an earlier attempt (``PendingSegment.retry``) and fails again is not counted.
 MAX_CONSECUTIVE_ERRORS = 5
-# A single segment can crash a CrispASR backend (e.g. a GGML assertion on odd audio).
-# Such a crash costs that segment an error result and the server a restart; after
-# this many restarts in one model run the backend is treated as unstable.
+# A single segment can crash a CrispASR backend (e.g. a GGML assertion on odd audio), or
+# outlast the request timeout (fastconformer on a 16-minute recording): CrispASR keeps
+# working on a request the worker gave up on, so every later request would time out
+# behind it. Either costs that segment an error result and the server a restart; after
+# this many restarts in one model run the backend is treated as unstable. Restarts after
+# a segment that already failed in an earlier attempt are not counted.
 MAX_RESTARTS = 3
 # The first request is a smoke test of the server. If it fails, the next segments are
 # tried as the smoke test; after this many the backend is judged broken and the model
@@ -408,6 +411,11 @@ class SweepWorker:
                 return True
         return False
 
+    @classmethod
+    def _must_restart(cls, server: Server, error_type: str | None) -> bool:
+        """Did the server die, or is it still busy with a request that timed out?"""
+        return error_type == "timeout" or cls._exited(server, error_type)
+
     def _serve(
         self,
         claim: ModelRunClaim,
@@ -449,14 +457,16 @@ class SweepWorker:
 
         def recover(segment: PendingSegment, result: ResultPost) -> Server:
             nonlocal restarts, smoke_done
-            restarts += 1
+            if not segment.retry:  # a known failure says nothing new about the backend
+                restarts += 1
             if restarts > MAX_RESTARTS:
                 raise CrispAsrError(
-                    f"CrispASR exited {restarts} times in this model run; last on "
+                    f"CrispASR restarted {restarts} times in this model run; last on "
                     f"{segment.relative_path}: {result.error_type}: {result.error_message}"
                 )
             log.warning(
-                "CrispASR exited on %s (%s); restarting (%s/%s)",
+                "CrispASR %s on %s (%s); restarting (%s/%s)",
+                "timed out" if result.error_type == "timeout" else "exited",
                 segment.relative_path,
                 result.error_message,
                 restarts,
@@ -515,7 +525,7 @@ class SweepWorker:
                             f"smoke test failed on {len(held)} segments in a row; last: {exc}"
                         ) from exc
                     log.warning("%s; trying the next segment as the smoke test", exc)
-                    if self._exited(server, exc.result.error_type):
+                    if self._must_restart(server, exc.result.error_type):
                         server = recover(segment, exc.result)
                     continue
                 if not smoke_done and result.status != ResultStatus.ERROR:
@@ -532,7 +542,7 @@ class SweepWorker:
                             f"{consecutive_errors} consecutive errors; last: "
                             f"{result.error_type}: {result.error_message}"
                         )
-                    if self._exited(server, result.error_type):
+                    if self._must_restart(server, result.error_type):
                         server = recover(segment, result)
                 else:
                     consecutive_errors = 0
