@@ -107,8 +107,10 @@ def test_a_profile_is_chosen_by_env_and_overridden_per_host(monkeypatch):
     monkeypatch.setenv("AEROCHORUS_ADJUDICATOR_PROFILE", "h100-large")
     monkeypatch.setenv("AEROCHORUS_ADJUDICATOR_URL", "http://gpu-host:8100/v1")
     monkeypatch.setenv("AEROCHORUS_ADJUDICATOR_MAX_TOKENS", "4096")
+    monkeypatch.setenv("AEROCHORUS_ADJUDICATOR_TEMPERATURE", "")  # compose: unset -> ""
     profile, gate = resolve_profile(AdjudicatorSettings(_env_file=None))
     assert profile.name == "h100-large" and profile.url == "http://gpu-host:8100/v1"
+    assert profile.temperature == 0.6  # an empty value overrides nothing
     assert profile.max_tokens == 4096 and profile.model == "local/qwen3-omni-30b-a3b-thinking"
     with pytest.raises(LookupError, match="unknown adjudicator profile 'nope'"):
         resolve_profile(AdjudicatorSettings(_env_file=None), "nope")

@@ -52,7 +52,10 @@ class ControlPlaneSettings(BaseSettings):
 class AdjudicatorSettings(BaseSettings):
     """The adjudication runner (`aerochorus adjudicate run`) on the host with the audio."""
 
-    model_config = SettingsConfigDict(env_prefix="AEROCHORUS_", env_file=".env", extra="ignore")
+    # Empty values (compose passes unset variables through as "") mean "not set".
+    model_config = SettingsConfigDict(
+        env_prefix="AEROCHORUS_", env_file=".env", extra="ignore", env_ignore_empty=True
+    )
 
     openrouter_api_key: SecretStr | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

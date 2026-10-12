@@ -148,24 +148,29 @@ services:
         condition: service_healthy
 
   adjudicator:
-    # Optional, paid (ADR-022). Starts only with AEROCHORUS_ADJUDICATOR=1 in
-    # aerochorus.env (deploy.sh adds --profile adjudication). Works only on batches a
-    # human confirmed in the UI under a cost cap. Holds the OpenRouter key.
+    # Optional (ADR-022, ADR-025). Starts only with AEROCHORUS_ADJUDICATOR=1 in
+    # aerochorus.env (deploy.sh adds --profile adjudication). Paid: works only on
+    # batches a human confirmed in the UI under a cost cap, and holds the OpenRouter
+    # key. Self-hosted: with AEROCHORUS_ADJUDICATOR_PROFILE set, it works only on that
+    # profile's batches and sends them to its vLLM server (AEROCHORUS_ADJUDICATOR_URL).
+    # The worker image: same CLI, plus ffmpeg for squelch-split audio inputs.
     <<: *app
+    image: aerochorus-worker:${AEROCHORUS_TAG:?}
     profiles: ["adjudication"]
     command:
       - aerochorus
       - adjudicate
       - run
-      - --follow
-      - --concurrency
-      - "2"
+      - --follow  # concurrency: the profile's, else 2
       - --api
       - http://api:8000
     stop_signal: SIGINT
     environment:
       <<: *app-env
       AEROCHORUS_OPENROUTER_API_KEY: ${AEROCHORUS_OPENROUTER_API_KEY:-}
+      AEROCHORUS_ADJUDICATOR_PROFILE: ${AEROCHORUS_ADJUDICATOR_PROFILE:-}
+      AEROCHORUS_ADJUDICATOR_URL: ${AEROCHORUS_ADJUDICATOR_URL:-}
+      AEROCHORUS_ADJUDICATOR_API_KEY: ${AEROCHORUS_ADJUDICATOR_API_KEY:-}
     volumes:
       - ${AEROCHORUS_DATA}/config/worker.toml:/etc/aerochorus/worker.toml:ro
       - *corpus-archive
