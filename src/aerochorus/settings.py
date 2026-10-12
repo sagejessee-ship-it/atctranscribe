@@ -39,6 +39,7 @@ class ControlPlaneSettings(BaseSettings):
     # it never holds the OpenRouter key (the runner, where the audio lives, does).
     adjudication_model: str = "~google/gemini-pro-latest"
     adjudication_max_items: int = 500  # per batch
+    adjudication_max_items_local: int = 5000  # per batch, self-hosted models (ADR-025)
     adjudication_max_batch_usd: float = 25.0  # the largest cap a batch may be created with
     adjudication_max_audio_s: float = 120.0  # longer segments are skipped, never sent
     # USD per million tokens when OpenRouter's public price list is unreachable.
@@ -56,6 +57,18 @@ class AdjudicatorSettings(BaseSettings):
     openrouter_api_key: SecretStr | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     adjudication_timeout_s: float = 300.0
+    # Self-hosted adjudicator (ADR-025): a profile from config/adjudicators.toml, and
+    # per-host overrides of it. The model server's API key comes only from here.
+    adjudicator_profile: str | None = None
+    adjudicator_profiles: str | None = None  # another profiles file
+    adjudicator_url: str | None = None
+    adjudicator_api_key: SecretStr | None = None
+    adjudicator_model: str | None = None
+    adjudicator_max_tokens: int | None = None
+    adjudicator_temperature: float | None = None
+    adjudicator_timeout_s: float | None = None
+    adjudicator_max_audio_inputs: int | None = None
+    adjudicator_strip_thinking: bool | None = None
 
 
 @lru_cache

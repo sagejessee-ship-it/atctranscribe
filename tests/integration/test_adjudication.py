@@ -12,7 +12,9 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from test_review import HYPOTHESES, save, seeded  # noqa: F401  (fixture)
 
+from aerochorus.adjudication.backends import OpenRouterBackend, backend_for
 from aerochorus.adjudication.openrouter import OpenRouterClient
+from aerochorus.adjudication.profiles import AdjudicatorProfile
 from aerochorus.adjudication_contracts import Pricing
 from aerochorus.db.models import AnnotationVersion, Segment
 from aerochorus.worker.adjudicator import Adjudicator
@@ -88,7 +90,8 @@ def fake_openrouter(requests: list[dict], status: int = 200) -> OpenRouterClient
 
 def runner(api, audio_roots, client) -> Adjudicator:
     readers = {key: ReadOnlyCorpusReader(root) for key, root in audio_roots.items()}
-    return Adjudicator(api, readers, client, "test/adjudicator", sleep=lambda s: None,
+    return Adjudicator(api, readers, OpenRouterBackend(client), "test/adjudicator",
+                       sleep=lambda s: None,
                        log=lambda m: None)  # fmt: skip
 
 
@@ -230,6 +233,71 @@ def test_changed_audio_is_refused_and_a_rejected_key_stops_the_runner(
     assert "sk-test" not in summary.stopped
     (item,) = http.get(f"/api/v1/segments/{s2}/adjudications").json()
     assert item["status"] == "queued" and item["attempts"] == 1  # back in line, nothing spent
+
+
+def fake_vllm(requests: list[dict], model: str = "local/voxtral-test"):
+    """A self-hosted model server (ADR-025) that thinks out loud before its JSON."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        payload = json.loads(request.content)
+        requests.append(payload)
+        context = payload["messages"][-1]["content"][-1]["text"].split("Nearby transmissions")[0]
+        transcript, confidence = next(
+            (answer for phrase, answer in ANSWERS.items() if phrase in context), ("", 0.8)
+        )
+        answer = {"speech_present": bool(transcript), "transcript": transcript,
+                  "confidence": confidence, "uncertain_words": [], "callsigns": [],
+                  "closest_hypothesis": "", "notes": ""}  # fmt: skip
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "<think>listening</think>" + json.dumps(answer)}}],
+            "usage": {"prompt_tokens": 700, "completion_tokens": 90},
+        })  # fmt: skip
+
+    profile = AdjudicatorProfile(name="test-local", model=model, url="http://vllm.test/v1")
+    return backend_for(profile, http=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_local_batches_are_free_and_claimed_only_by_their_own_runner(
+    http,
+    api,
+    seeded,  # noqa: F811
+    pricing,
+    audio,
+):
+    ids = [seeded[k] for k in ("s1_consensus", "s2_disagree")]
+    plan = preview(http, ids, model="local/voxtral-test")
+    assert plan["pricing"]["source"].startswith("self-hosted")
+    assert plan["estimated_cost_usd"] == 0 and plan["worst_case_cost_usd"] == 0
+    assert plan["limits"]["max_items"] == 5000
+    local = create(http, ids, model="local/voxtral-test").json()
+    paid = create(http, [seeded["s3_near"]]).json()
+
+    def claim(body):
+        return http.post("/api/v1/adjudication-items/claim", json=body).json()
+
+    # An OpenRouter runner (no model list, old and new alike) never gets a local item.
+    (hosted,) = claim({"runner": "openrouter", "limit": 8})
+    assert hosted["batch_id"] == paid["id"]
+    assert claim({"runner": "other-gpu", "limit": 8, "models": ["local/other"]}) == []
+
+    requests: list[dict] = []
+    readers = {key: ReadOnlyCorpusReader(root) for key, root in audio.items()}
+    summary = Adjudicator(api, readers, fake_vllm(requests), "test/local-small",
+                          sleep=lambda s: None, log=lambda m: None).run(concurrency=2)  # fmt: skip
+    assert (summary.done, summary.failed) == (2, 0) and summary.spent_usd == 0
+    stats = summary.stats()
+    assert stats["completion_tokens_total"] == 180 and stats["latency_ms_p50"] is not None
+    assert {r["model"] for r in requests} == {"local/voxtral-test"}
+
+    detail = http.get(f"/api/v1/adjudications/{local['id']}").json()
+    assert detail["status"] == "done" and detail["spent_usd"] == 0
+    s1 = next(i for i in detail["items"] if i["segment_id"] == seeded["s1_consensus"])
+    assert s1["transcript"] == "delta one two three taxi via alpha"  # thinking stripped
+    assert s1["best_hypothesis_similarity"] == 1.0
+    assert s1["cost_usd"] is None and s1["usage"]["cost_source"].startswith("self-hosted")
+    assert s1["usage"]["calls"] == 1 and s1["usage"]["latency_ms"] >= 0
 
 
 def test_accepting_as_silver_never_overrides_human_work(http, api, db, seeded, pricing, audio):  # noqa: F811

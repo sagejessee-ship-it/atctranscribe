@@ -1,15 +1,17 @@
-"""Adjudication runner (ADR-022): claim, read audio read-only, ask the model, record.
+"""Adjudication runner (ADR-022, ADR-025): claim, read audio read-only, ask, record.
 
-Runs on the host where the source audio is mounted (the Linux worker/edge box).
-It holds the OpenRouter key; the control plane decides what may be sent and
-enforces each batch's cost cap when it hands out work. Money spent is always
-reported, even when the answer turns out to be unusable.
+Runs on the host where the source audio is mounted. A backend does the asking: the
+paid hosted model (it holds the OpenRouter key; the control plane enforces each
+batch's cost cap when it hands out work) or a self-hosted model server named by a
+profile. Money spent is always reported, even when the answer turns out unusable.
+Work is resumable by construction: finished items are never handed out again, and
+stale claims go back in line.
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
+import statistics
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -17,21 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-from aerochorus.adjudication.openrouter import (
-    OpenRouterClient,
-    OpenRouterError,
-    OpenRouterFatal,
-    content_of,
-    cost_of,
-)
-from aerochorus.adjudication.prompt import (
-    AUDIO_FORMATS,
-    MAX_TOKENS,
-    SYSTEM_PROMPT,
-    build_payload,
-    parse_result,
-    render_context,
-)
+from aerochorus.adjudication.backends import AdjudicationBackend, Answer
+from aerochorus.adjudication.errors import BackendError, BackendFatal
+from aerochorus.adjudication.prompt import AUDIO_FORMATS
 from aerochorus.worker.client import ApiClient
 from aerochorus.worker.fs import ReadOnlyCorpusReader, SourceUnavailable
 
@@ -43,6 +33,21 @@ class RunSummary:
     spent_usd: float = 0.0
     stopped: str | None = None
     items: list[dict[str, Any]] = field(default_factory=list)
+    latencies_ms: list[int] = field(default_factory=list)
+    tokens: dict[str, int] = field(default_factory=dict)
+
+    def stats(self) -> dict[str, Any]:
+        lat = sorted(self.latencies_ms)
+        return {
+            "items": self.done + self.failed,
+            "done": self.done,
+            "failed": self.failed,
+            "spent_usd": round(self.spent_usd, 4),
+            "latency_ms_p50": round(statistics.median(lat)) if lat else None,
+            "latency_ms_p95": lat[min(len(lat) - 1, round(0.95 * (len(lat) - 1)))] if lat else None,
+            "latency_ms_mean": round(statistics.fmean(lat)) if lat else None,
+            **{f"{k}_total": v for k, v in sorted(self.tokens.items())},
+        }
 
 
 class Adjudicator:
@@ -50,7 +55,7 @@ class Adjudicator:
         self,
         api: ApiClient,
         readers: dict[str, ReadOnlyCorpusReader],
-        openrouter: OpenRouterClient,
+        backend: AdjudicationBackend,
         runner: str,
         *,
         retries: int = 2,
@@ -60,7 +65,7 @@ class Adjudicator:
     ) -> None:
         self.api = api
         self.readers = readers
-        self.openrouter = openrouter
+        self.backend = backend
         self.runner = runner
         self.retries = retries
         self.backoff_s = backoff_s
@@ -91,17 +96,7 @@ class Adjudicator:
 
     def process(self, claim: dict[str, Any]) -> dict[str, Any]:
         item_id = claim["item_id"]
-        params = claim.get("params") or {}
-        effort = params.get("reasoning_effort", "low")
-        context = render_context(claim["bundle"])
-        request: dict[str, Any] = {
-            "model": claim["model"],
-            "prompt_version": claim["prompt_version"],
-            "reasoning_effort": effort,
-            "max_tokens": MAX_TOKENS[effort],
-            "system_prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
-            "context_text": context,
-        }
+        request = self.backend.request_record(claim)
         try:
             data, audio_format = self._audio(claim)
         except (LookupError, SourceUnavailable) as exc:  # not here / not mounted right now
@@ -114,48 +109,39 @@ class Adjudicator:
             "bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }
-        payload = build_payload(
-            claim["model"],
-            claim["bundle"],
-            base64.b64encode(data).decode(),
-            audio_format,
-            effort,
-        )
-        pricing = claim.get("pricing") or {}
-        price = {k: float(pricing.get(k) or 0) for k in ("prompt", "completion", "audio")}
-        body = None
+        answer: Answer | None = None
+        started = time.monotonic()
         for attempt in range(self.retries + 1):
             try:
-                body = self.openrouter.complete(payload)
+                answer = self.backend.adjudicate(claim, data, audio_format, request)
                 break
-            except OpenRouterFatal as exc:
+            except BackendFatal as exc:
                 self._post(item_id, status="failed", error=str(exc), request=request,
                            retryable=True)  # fmt: skip
                 raise
-            except OpenRouterError as exc:
+            except BackendError as exc:
                 if exc.retryable and attempt < self.retries:
                     self.log(f"item {item_id}: {exc}; retrying")
                     self.sleep(self.backoff_s * (attempt + 1))
                     continue
                 return self._post(item_id, status="failed", error=str(exc), request=request,
                                   retryable=exc.retryable)  # fmt: skip
-        cost, cost_source = cost_of(body, price)
-        usage = (body.get("usage") or {}) | {"cost_source": cost_source}
-        try:
-            result = parse_result(content_of(body))
-        except ValueError as exc:
-            return self._post(item_id, status="failed", error=f"unusable answer: {exc}",
-                              request=request, response=body, usage=usage,
-                              cost_usd=cost)  # fmt: skip
+        assert answer is not None
+        answer.usage.setdefault("latency_ms", round((time.monotonic() - started) * 1000))
+        recorded = {
+            "request": request,
+            "response": answer.body,
+            "usage": answer.usage,
+            "cost_usd": answer.cost_usd,
+        }
+        if answer.result is None:
+            return self._post(item_id, status="failed", error=answer.error, **recorded)
         return self._post(
             item_id,
             status="done",
-            transcript=result["transcript"],
-            result=result,
-            request=request,
-            response=body,
-            usage=usage,
-            cost_usd=cost,
+            transcript=answer.result["transcript"],
+            result=answer.result,
+            **recorded,
         )
 
     def run(
@@ -174,7 +160,9 @@ class Adjudicator:
                     if max_items is None
                     else min(concurrency, max_items - summary.done - summary.failed)
                 )
-                claims = self.api.claim_adjudications(self.runner, limit=room)
+                claims = self.api.claim_adjudications(
+                    self.runner, limit=room, models=self.backend.claims
+                )
                 if not claims:
                     if not follow:
                         break
@@ -184,18 +172,25 @@ class Adjudicator:
                 for claim, future in zip(claims, futures, strict=True):
                     try:
                         view = future.result()
-                    except OpenRouterFatal as exc:
+                    except BackendFatal as exc:
                         summary.stopped = str(exc)
                         summary.failed += 1
                         continue
                     summary.items.append(view)
                     summary.spent_usd += view.get("cost_usd") or 0.0
+                    usage = view.get("usage") or {}
+                    if isinstance(usage.get("latency_ms"), int):
+                        summary.latencies_ms.append(usage["latency_ms"])
+                    for key in ("prompt_tokens", "completion_tokens"):
+                        if isinstance(usage.get(key), int):
+                            summary.tokens[key] = summary.tokens.get(key, 0) + usage[key]
                     if view["status"] == "done":
                         summary.done += 1
                     else:
                         summary.failed += 1
                     self.log(
                         f"item {claim['item_id']} segment {claim['segment_id']}: {view['status']}"
+                        + (f" ({usage['latency_ms']} ms)" if "latency_ms" in usage else "")
                         + (f" — {view['transcript']!r}" if view.get("transcript") else "")
                         + (f" — {view['error']}" if view.get("error") else "")
                     )

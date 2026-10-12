@@ -24,6 +24,14 @@ from pydantic import BaseModel, Field, model_validator
 
 from aerochorus.review_contracts import ReviewFilters
 
+# Self-hosted adjudicators (ADR-025) record batches under "local/<name>": no per-request
+# cost, and only a runner configured for that exact model claims their items.
+LOCAL_MODEL_PREFIX = "local/"
+
+
+def is_local_model(model: str) -> bool:
+    return model.startswith(LOCAL_MODEL_PREFIX)
+
 
 class BatchStatus(StrEnum):
     QUEUED = "queued"
@@ -192,6 +200,9 @@ class AdjudicationContext(BaseModel):
 class AdjudicationClaimRequest(BaseModel):
     runner: str
     limit: int = Field(default=1, ge=1, le=8)
+    # Only items of batches for these models. None: any hosted model, never a local one
+    # (an OpenRouter runner must not send "local/..." items to OpenRouter).
+    models: list[str] | None = None
 
 
 class ClaimedAdjudication(BaseModel):

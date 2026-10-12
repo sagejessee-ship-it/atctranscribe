@@ -25,6 +25,7 @@ from aerochorus.adjudication.prompt import (
     render_context,
 )
 from aerochorus.adjudication_contracts import (
+    LOCAL_MODEL_PREFIX,
     AdjudicationAccept,
     AdjudicationAcceptOutcome,
     AdjudicationBatchDetail,
@@ -42,6 +43,7 @@ from aerochorus.adjudication_contracts import (
     ItemStatus,
     Pricing,
     RunnerSeen,
+    is_local_model,
 )
 from aerochorus.api import context as context_svc
 from aerochorus.api.review import (
@@ -117,6 +119,19 @@ class PricingBook:
         return pricing
 
 
+def pricing_for(pricing_book: PricingBook, model: str) -> Pricing:
+    """A self-hosted model (ADR-025) costs nothing per request; others are looked up."""
+    if is_local_model(model):
+        return Pricing(
+            model=model,
+            source="self-hosted model (no per-request cost)",
+            prompt=0.0,
+            completion=0.0,
+            audio=0.0,
+        )
+    return pricing_book.get(model)
+
+
 class RunnerRegistry:
     """Runners seen polling for work (in memory: they poll every few seconds)."""
 
@@ -138,6 +153,12 @@ class RunnerRegistry:
 
 
 # --- planning ---------------------------------------------------------------------------------
+
+
+def _max_items(settings: ControlPlaneSettings, model: str) -> int:
+    if is_local_model(model):
+        return settings.adjudication_max_items_local
+    return settings.adjudication_max_items
 
 
 def _selected_ids(session: Session, selection: AdjudicationSelection) -> list[int]:
@@ -244,7 +265,7 @@ def preview(
 ) -> AdjudicationPreview:
     now = now or datetime.now(UTC)
     model = body.params.model or settings.adjudication_model
-    pricing = pricing_book.get(model)
+    pricing = pricing_for(pricing_book, model)
     params = body.params.model_dump() | {"model": model}
     eligible, skipped, selected = _plan(session, body.selection, params, model, pricing, settings)
     typical = sum(e["typical"] for e in eligible)
@@ -264,7 +285,7 @@ def preview(
         ),
         pricing=pricing,
         limits={
-            "max_items": settings.adjudication_max_items,
+            "max_items": _max_items(settings, model),
             "max_batch_usd": settings.adjudication_max_batch_usd,
             "max_audio_s": settings.adjudication_max_audio_s,
         },
@@ -279,26 +300,30 @@ def create(
     settings: ControlPlaneSettings,
     pricing_book: PricingBook,
 ) -> AdjudicationBatchView:
+    model = body.params.model or settings.adjudication_model
     if not body.confirm:
         raise Invalid(
-            "confirm must be true: adjudication sends audio and transcripts to an external "
-            "paid service (OpenRouter)"
+            "confirm must be true: adjudication sends audio and transcripts to "
+            + (
+                "the self-hosted model server"
+                if is_local_model(model)
+                else "an external paid service (OpenRouter)"
+            )
         )
     if body.max_cost_usd > settings.adjudication_max_batch_usd:
         raise Invalid(
             f"cost cap ${body.max_cost_usd:.2f} exceeds the per-batch limit "
             f"${settings.adjudication_max_batch_usd:.2f} (AEROCHORUS_ADJUDICATION_MAX_BATCH_USD)"
         )
-    model = body.params.model or settings.adjudication_model
-    pricing = pricing_book.get(model)
+    pricing = pricing_for(pricing_book, model)
     params = body.params.model_dump() | {"model": model}
     eligible, skipped, selected = _plan(session, body.selection, params, model, pricing, settings)
     if not eligible:
         raise Invalid(f"nothing to adjudicate: {skipped or 'empty selection'}")
-    if len(eligible) > settings.adjudication_max_items:
+    max_items = _max_items(settings, model)
+    if len(eligible) > max_items:
         raise Invalid(
-            f"{len(eligible)} items exceed the per-batch limit of "
-            f"{settings.adjudication_max_items}; select fewer"
+            f"{len(eligible)} items exceed the per-batch limit of {max_items}; select fewer"
         )
     estimate = round(sum(e["typical"] for e in eligible), 4)
     if abs(estimate - body.acknowledged_cost_usd) > max(0.01, 0.05 * body.acknowledged_cost_usd):
@@ -643,6 +668,10 @@ def claim(
         )
         if blocked:
             query = query.where(AdjudicationItem.batch_id.not_in(blocked))
+        if body.models is not None:  # a runner for these models only (a self-hosted profile)
+            query = query.where(AdjudicationBatch.model.in_(body.models))
+        else:  # an OpenRouter runner: never send a local model's items there
+            query = query.where(AdjudicationBatch.model.not_like(f"{LOCAL_MODEL_PREFIX}%"))
         item = session.scalar(query)
         if item is None:
             break
