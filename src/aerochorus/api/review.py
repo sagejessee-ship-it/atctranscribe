@@ -17,7 +17,7 @@ from datetime import timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select, Text, and_, cast, exists, func, literal, or_, select
+from sqlalchemy import Select, Text, and_, cast, exists, false, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session, aliased
 
@@ -171,6 +171,40 @@ def _text_array(values: list[str]):
     return cast(values, ARRAY(Text))
 
 
+def _has_result(session: Session, model_condition):
+    """The segment has a result from a matching model (any model, voting or not).
+
+    The matching model runs are resolved first and passed as values, so PostgreSQL can
+    use its statistics for them. With a subquery it guessed a tenth of the rows and
+    chose a nested loop: seconds instead of a hash join.
+    """
+    runs = list(
+        session.scalars(
+            select(SweepRunModel.id)
+            .join(Model, Model.id == SweepRunModel.model_id)
+            .where(model_condition)
+        )
+    )
+    if not runs:
+        return false()
+    return Segment.id.in_(
+        select(TranscriptionResult.segment_id).where(
+            TranscriptionResult.sweep_run_model_id.in_(runs)
+        )
+    )
+
+
+def _agrees(key: str, values: list[str]):
+    """A matching model ("providers") or family is in the segment's agreeing group: the
+    largest exact-match group or the near-match group, with 2+ families. Groups are
+    stored best first, and only voting models are in them."""
+    sa, wanted = SegmentAgreement, _text_array(values)
+    return or_(
+        and_(sa.best_exact_family_count >= 2, sa.exact_groups[0][key].has_any(wanted)),
+        and_(sa.best_near_family_count >= 2, sa.near_group[key].has_any(wanted)),
+    )
+
+
 def _like(q: str) -> str:
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
@@ -252,10 +286,16 @@ def _apply_filters(session: Session, query: Select, f: ReviewFilters, a: _Aliase
         query = query.where(Segment.capture_start_utc >= f.utc_from)
     if f.utc_to:
         query = query.where(Segment.capture_start_utc < f.utc_to)
-    if f.models:
-        query = query.where(sa.models.has_any(_text_array(f.models)))
-    if f.families:
-        query = query.where(sa.families.has_any(_text_array(f.families)))
+    if f.model_match == "agrees":
+        if f.models:
+            query = query.where(_agrees("providers", f.models))
+        if f.families:
+            query = query.where(_agrees("families", f.families))
+    else:
+        if f.models:
+            query = query.where(_has_result(session, Model.logical_name.in_(f.models)))
+        if f.families:
+            query = query.where(_has_result(session, Model.architecture_family.in_(f.families)))
     if f.min_models:
         query = query.where(sa.results_count >= f.min_models)
     if f.min_success is not None:

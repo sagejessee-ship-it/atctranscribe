@@ -1,5 +1,5 @@
 <#
-Run the AeroChorus worker unattended on the Windows PC for days (runbook §14.8).
+Run the AeroChorus worker unattended on the Windows PC (runbook: Start here, and 14.8).
 
   powershell -ExecutionPolicy Bypass -File deploy\windows\run-worker.ps1
 

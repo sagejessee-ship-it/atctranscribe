@@ -62,7 +62,7 @@ The import:
 7. unpacks the artifacts (read-only) and the ATCO2 clips.
 
 Then pull models (`aerochorus worker models pull --suite smoke-linux1070`)
-and qualify (runbook §10).
+and qualify ([LINUX_DEPLOYMENT_RUNBOOK.md](LINUX_DEPLOYMENT_RUNBOOK.md) §10).
 
 ## 4. After
 

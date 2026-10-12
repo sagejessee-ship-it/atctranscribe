@@ -353,6 +353,33 @@ AIRSPACES = {
 }  # fmt: skip
 
 
+def _local_adsb_switch(control, fake):
+    """Test-only: switch to the local adsb.lol store, importing a fake day in a thread with
+    traffic around one segment's time (ADR-024), and back to the fake OpenSky."""
+    import threading
+
+    from fake_adsblol import FakeOpener
+
+    from aerochorus.api import adsb_local
+    from aerochorus.db.models import Segment
+
+    def use_local(segment_id: int) -> dict:
+        with control.state.sessionmaker() as session:
+            t = int(session.get(Segment, segment_id).capture_start_utc.timestamp())
+        opener = FakeOpener(t)
+        control.state.adsb_provider = adsb_local.LocalAdsb(control.state.sessionmaker)
+        control.state.adsb_spawn = lambda: threading.Thread(
+            target=adsb_local.run, args=(control.state.engine, opener), daemon=True
+        ).start()
+        return {"ok": True}
+
+    def use_fake() -> dict:
+        control.state.adsb_provider, control.state.adsb_spawn = fake, None
+        return {"ok": True}
+
+    return use_local, use_fake
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8765)
@@ -373,12 +400,16 @@ def main() -> None:
 
     control = create_app(ControlPlaneSettings(database_url=url))
     control.state.adsb_provider = None  # never the real OpenSky from a test stack
+    control.state.adsb_spawn = None  # ...nor a real adsb.lol download
     control.state.pricing_book = FixedPricing()  # never OpenRouter's price list either
     if args.fake_adsb:
         fake = FakeOpenSky()
         control.state.adsb_provider = fake
         # Test-only: lets the browser suite prove that cached snapshots are reused.
         control.add_api_route("/api/__e2e/adsb-calls", lambda: {"calls": fake.calls})
+        use_local, use_fake = _local_adsb_switch(control, fake)
+        control.add_api_route("/api/__e2e/adsb-local", use_local, methods=["POST"])
+        control.add_api_route("/api/__e2e/adsb-opensky", use_fake, methods=["POST"])
     seed(control, corpus_root, offline_root)
 
     upstream = httpx.AsyncClient(transport=httpx.ASGITransport(app=control), base_url="http://cp")

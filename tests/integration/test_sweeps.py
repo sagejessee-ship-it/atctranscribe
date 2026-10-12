@@ -27,7 +27,7 @@ from aerochorus.sweep_contracts import (
 from aerochorus.worker.artifacts import ArtifactStore
 from aerochorus.worker.client import ApiError
 from aerochorus.worker.config import SourceMount, TranscriptionConfig, WorkerConfig
-from aerochorus.worker.crispasr import TranscribeResponse
+from aerochorus.worker.crispasr import CrispAsrError, TranscribeResponse
 from aerochorus.worker.transcriber import SweepWorker
 
 SEGMENTS = 7
@@ -354,6 +354,59 @@ def test_segment_errors_are_recorded_then_retried(api, db, lab):
     assert result_count(db) == 8
 
 
+def test_a_retry_is_smoke_tested_on_a_fresh_segment_not_on_earlier_failures(api, db, lab):
+    # A retry is handed the segments that failed before first (lowest ordinals). The
+    # model fails on them again, which says nothing new about the server (sweep 12,
+    # glm-asr: three of them in a row failed every retry's smoke test).
+    unanswerable: set[str] = set()
+
+    def garbled(filename, params, server):
+        if filename in unanswerable:
+            return TranscribeResponse(200, b"not a JSON object", 40)
+        return default_script(filename, params, server)
+
+    def first_attempt(filename, params, server):
+        n = len(server.requests)
+        if n == SEGMENTS:
+            raise CrispAsrError("backend wedged (fake)")  # the run fails, one segment left
+        if n != 2:  # every segment but the second: more failures in a row than either limit
+            unanswerable.add(filename)
+        return garbled(filename, params, server)
+
+    def broken(filename, params, server):
+        return TranscribeResponse(500, b'{"error": "boom"}', 5)
+
+    sweep = new_sweep(api)
+
+    def alpha():
+        return api.get_sweep(sweep.id).models[0]
+
+    outcomes = sweeper(api, lab, FakeLauncher(script=first_attempt)).run_until_idle(1)
+    assert outcomes[0].status == "failed"
+    assert (alpha().segments_error, alpha().segments_completed) == (5, 1)
+
+    # A broken server is still caught, by the smoke test on the fresh segment.
+    api.control_sweep(sweep.id, "retry", model="alpha-model")
+    outcomes = sweeper(api, lab, FakeLauncher(script=broken)).run_until_idle(1)
+    assert outcomes[0].status == "failed" and "smoke" in outcomes[0].message
+    assert (alpha().segments_error, alpha().segments_completed) == (5, 1)
+
+    # A working server: the old failures are recorded again, the rest completes.
+    api.control_sweep(sweep.id, "retry", model="alpha-model")
+    outcomes = sweeper(api, lab, FakeLauncher(script=garbled)).run_until_idle(1)
+    assert [(o.model, o.status, o.processed) for o in outcomes] == [("alpha-model", "completed", 6)]
+    done = alpha()
+    assert (done.segments_error, done.segments_completed, done.attempts) == (5, 2, 3)
+    db.expire_all()
+    errors = db.execute(
+        select(TranscriptionResult.error_type, TranscriptionResult.attempt).where(
+            TranscriptionResult.sweep_run_model_id == done.id,
+            TranscriptionResult.status == "error",
+        )
+    ).all()
+    assert sorted(errors) == [("invalid_response", 3)] * 5
+
+
 def test_pause_releases_and_resume_continues(api, db, lab):
     sweep = new_sweep(api)
 
@@ -451,6 +504,68 @@ def test_a_segment_that_crashes_the_backend_costs_only_that_segment(api, db, lab
         select(TranscriptionResult.error_type).where(TranscriptionResult.status == "error")
     ).all()
     assert errors == ["server_unavailable", "server_unavailable"]
+
+
+def hang(server):
+    """The request outlasts the timeout and the server keeps working on it, so every
+    later request waits behind it (fastconformer on a 16-minute recording)."""
+    server.busy = True
+    raise httpx.ReadTimeout("timed out")
+
+
+@pytest.mark.parametrize("nth", [1, 3], ids=["as-the-smoke-test", "mid-run"])
+def test_a_segment_that_outlasts_the_timeout_costs_only_that_segment(api, db, lab, nth):
+    state = {"requests": 0, "slow": None}
+
+    def script(filename, params, server):
+        state["requests"] += 1
+        if state["slow"] is None and state["requests"] == nth:
+            state["slow"] = filename
+        if server.busy or filename == state["slow"]:
+            hang(server)
+        return default_script(filename, params, server)
+
+    launcher = FakeLauncher(script=script)
+    sweep = new_sweep(api, relative_dir="2026/09/08")
+    outcomes = sweeper(api, lab, launcher).run_until_idle()
+    assert [o.status for o in outcomes] == ["completed", "completed"]
+    done = api.get_sweep(sweep.id)
+    assert [m.segments_error for m in done.models] == [1, 1]  # only the slow segment
+    assert len(launcher.servers) == 4  # each model: started, timed out once, restarted
+    errors = db.scalars(
+        select(TranscriptionResult.error_type).where(TranscriptionResult.status == "error")
+    ).all()
+    assert errors == ["timeout", "timeout"]
+
+
+def test_known_failures_on_a_retry_do_not_use_up_the_restart_budget(api, db, lab, monkeypatch):
+    from aerochorus.worker import transcriber
+
+    monkeypatch.setattr(transcriber, "MAX_RESTARTS", 1)
+    seen: list[str] = []
+
+    def script(filename, params, server):
+        if filename not in seen:
+            seen.append(filename)
+        if server.busy or seen.index(filename) in (1, 3):  # this model never finishes these
+            hang(server)
+        return default_script(filename, params, server)
+
+    sweep = new_sweep(api)
+    outcomes = sweeper(api, lab, FakeLauncher(script=script)).run_until_idle(1)
+    assert outcomes[0].status == "failed" and "restarted 2 times" in outcomes[0].message
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert (alpha.segments_error, alpha.segments_completed) == (2, 2)
+
+    # Both timeouts happen again on the retry and cost a restart each, but they are known
+    # failures: the budget is for new trouble, and the rest of the run completes.
+    api.control_sweep(sweep.id, "retry", model="alpha-model")
+    launcher = FakeLauncher(script=script)
+    outcomes = sweeper(api, lab, launcher).run_until_idle(1)
+    assert [(o.model, o.status) for o in outcomes] == [("alpha-model", "completed")]
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert (alpha.segments_error, alpha.segments_completed) == (2, SEGMENTS - 2)
+    assert len(launcher.servers) == 3
 
 
 def test_a_backend_that_crashes_on_everything_fails_without_results(api, db, lab):
@@ -680,3 +795,20 @@ def test_two_slots_transcribe_two_models_at_once(api, db, lab, monkeypatch):
     assert overlap.is_set()  # both servers answered requests at the same time
     assert api.get_sweep(sweep.id).status == "completed"
     assert result_count(db) == 2 * SEGMENTS
+
+
+def test_runs_over_an_unreadable_source_wait_without_loading_a_model(api, db, lab, tmp_path):
+    from aerochorus.worker.fs import ReadOnlyCorpusReader
+
+    sweep = new_sweep(api)
+    launcher = FakeLauncher()
+    worker = sweeper(api, lab, launcher)
+    worker.readers[SOURCE_KEY] = ReadOnlyCorpusReader(tmp_path / "share-offline")
+    for _ in range(3):
+        assert worker.process_next() is None  # nothing claimed, no model loaded
+    assert launcher.servers == []
+    assert api.get_sweep(sweep.id).status == "queued"
+
+    worker.readers[SOURCE_KEY] = ReadOnlyCorpusReader(lab.root)  # the share is back
+    assert worker.process_next().status == "completed"
+    assert len(launcher.servers) == 1

@@ -1,19 +1,74 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 
 import type { Facets, ReviewFilters } from "../api/types";
+import { HelpTip } from "../components/HelpTip";
+import { fmtCount } from "../lib/format";
 import { REVIEW_STATUSES, TRAINING_LABELS } from "./filterMeta";
+import { FAMILY_TEXT, VOTING_TEXT, columnHelp } from "./glossary";
 
 type Patch = (patch: Partial<ReviewFilters>) => void;
 
-function Group({ title, children }: { title: string; children: ReactNode }) {
+function Group({ title, help, children }: { title: string; help?: ReactNode; children: ReactNode }) {
   const id = useId();
   return (
     <fieldset className="rail__group" aria-labelledby={id}>
-      <legend className="rail__title" id={id}>
-        {title}
+      <legend className="rail__title">
+        <span id={id}>{title}</span>
+        {help ? (
+          <HelpTip label={title} wide>
+            {help}
+          </HelpTip>
+        ) : null}
       </legend>
       {children}
     </fieldset>
+  );
+}
+
+function AgreementHelp({ nearThreshold }: { nearThreshold: number | undefined }) {
+  const terms = columnHelp(nearThreshold).filter((c) =>
+    ["exact_providers", "exact_families", "near_families", "near_similarity"].includes(c.id),
+  );
+  return (
+    <>
+      <p>
+        Agreement compares the voting models' transcripts of a segment. Independent agreement (different families)
+        is the strongest sign a transcript is right.
+      </p>
+      <dl className="glossary">
+        {terms.map((t) => (
+          <div key={t.id}>
+            <dt>{t.name}</dt>
+            <dd>{t.text}</dd>
+          </div>
+        ))}
+        <div>
+          <dt>Utterance families / words</dt>
+          <dd>
+            Partial agreement: a stretch of words inside the segment that several families agree on, even when the
+            whole transcripts differ.
+          </dd>
+        </div>
+      </dl>
+    </>
+  );
+}
+
+function ModelsHelp() {
+  return (
+    <>
+      <p>
+        <b>Has a result</b>: segments any ticked model (or family) transcribed, whether or not it voted.
+      </p>
+      <p>
+        <b>Agrees</b>: segments where a ticked model or family is in the agreeing group (the largest identical group
+        or the near-agreement group, each with 2+ families). Use it to find where, say, granite-speech agrees with
+        the others. Only voting models can agree.
+      </p>
+      <p>{FAMILY_TEXT}</p>
+      <p>{VOTING_TEXT}</p>
+      <p className="muted">Ticking several means any of them. A model and a family together must both match.</p>
+    </>
   );
 }
 
@@ -133,8 +188,21 @@ export function FilterRail({
   facets: Facets | undefined;
   onChange: Patch;
 }) {
-  const models = facets?.models.map((m) => m.name) ?? [];
-  const familyOf = Object.fromEntries(facets?.models.map((m) => [m.name, m.family]) ?? []);
+  // Models with results (and anything already ticked), voting ones first.
+  const selected = new Set([...(filters.models ?? []), ...(filters.families ?? [])]);
+  const listed = (facets?.models ?? [])
+    .filter((m) => m.has_results || selected.has(m.name))
+    .sort((a, b) => Number(b.voting) - Number(a.voting) || a.name.localeCompare(b.name));
+  const byName = Object.fromEntries(listed.map((m) => [m.name, m]));
+  const families = [...new Set(listed.map((m) => m.family))]
+    .concat((filters.families ?? []).filter((f) => !listed.some((m) => m.family === f)))
+    .sort();
+  const votingFamilies = new Set(listed.filter((m) => m.voting).map((m) => m.family));
+  const match = filters.model_match ?? "result";
+  const tickedNonVoting =
+    match === "agrees" &&
+    ((filters.models ?? []).some((m) => byName[m] && !byName[m].voting) ||
+      (filters.families ?? []).some((f) => !votingFamilies.has(f)));
   return (
     <aside className="rail" aria-label="Filters">
       <Group title="Where">
@@ -190,7 +258,7 @@ export function FilterRail({
         </label>
       </Group>
 
-      <Group title="Agreement">
+      <Group title="Agreement" help={<AgreementHelp nearThreshold={facets?.near_threshold} />}>
         <NumberField
           label="Exact families ≥"
           value={filters.min_exact_families}
@@ -282,23 +350,64 @@ export function FilterRail({
         />
       </Group>
 
-      <Group title="Models">
+      <Group title="Models" help={<ModelsHelp />}>
+        <div className="rail__mode" role="radiogroup" aria-label="Show segments where the ticked models or families">
+          <label>
+            <input
+              type="radio"
+              name="model-match"
+              checked={match === "result"}
+              onChange={() => onChange({ model_match: "result" })}
+            />
+            has a result
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="model-match"
+              checked={match === "agrees"}
+              onChange={() => onChange({ model_match: "agrees" })}
+            />
+            agrees
+          </label>
+        </div>
         <Checks
-          options={models}
+          options={listed.map((m) => m.name)}
           value={filters.models}
           onChange={(m) => onChange({ models: m })}
-          render={(m) => (
-            <>
-              {m} <span className="muted">{familyOf[m]}</span>
-            </>
-          )}
+          render={(name) => {
+            const m = byName[name];
+            return (
+              <span className="rail__model">
+                <span className="rail__model-name">{name}</span>
+                {m ? (
+                  <span className="rail__model-meta">
+                    {m.family} · {m.voting ? "voting" : "not voting"}
+                    {m.results ? ` · ${fmtCount(m.results)}` : ""}
+                  </span>
+                ) : null}
+              </span>
+            );
+          }}
         />
         <div className="rail__sub">Architecture family</div>
         <Checks
-          options={facets?.families ?? []}
+          options={families}
           value={filters.families}
-          onChange={(families) => onChange({ families })}
+          onChange={(f) => onChange({ families: f })}
+          render={(f) => (
+            <>
+              {f}
+              {votingFamilies.has(f) ? null : <span className="muted"> · not voting</span>}
+            </>
+          )}
         />
+        {tickedNonVoting ? (
+          <p className="rail__note" role="status">
+            A ticked model or family doesn't vote, so it is never in an agreeing group. Switch to "has a result" to
+            see what it transcribed.
+          </p>
+        ) : null}
       </Group>
 
       <Group title="Risk">

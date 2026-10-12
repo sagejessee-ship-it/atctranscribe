@@ -16,6 +16,16 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from aerochorus.api.adsb_local import (
+    TRAIL_PAD_S,
+    DayView,
+    LocalAdsb,
+    NotImported,
+    Spawner,
+    day_views,
+    ensure_importer,
+    utc_days,
+)
 from aerochorus.api.airports import resolve_airport, station_map
 from aerochorus.api.sweeps import Invalid, NotFound
 from aerochorus.context.opensky import (
@@ -40,6 +50,10 @@ class Unavailable(RuntimeError):
 
 class Upstream(RuntimeError):
     """The provider failed; nothing was stored."""
+
+
+class NeedsImport(RuntimeError):
+    """The local store does not have the segment's day(s) yet."""
 
 
 class SnapshotView(BaseModel):
@@ -69,9 +83,15 @@ class AdsbStatus(BaseModel):
     window_after_s: int
     radius_nm: float
     snapshot: SnapshotView | None
+    # The local adsb.lol store (ADR-024): days can be imported on request.
+    importable: bool = False
+    # The UTC days this segment's window needs, and whether each is imported.
+    days: list[DayView] = []
 
 
-def make_provider(settings: ControlPlaneSettings) -> AdsbProvider | None:
+def make_provider(
+    settings: ControlPlaneSettings, sessionmaker: Any | None = None
+) -> AdsbProvider | None:
     password = settings.opensky_password.get_secret_value() if settings.opensky_password else ""
     secret = (
         settings.opensky_client_secret.get_secret_value() if settings.opensky_client_secret else ""
@@ -90,9 +110,10 @@ def make_provider(settings: ControlPlaneSettings) -> AdsbProvider | None:
         return trino
     if settings.adsb_provider == "rest":
         return rest
-    if trino and rest:
-        return AutoProvider(trino, rest)
-    return trino or rest
+    opensky = AutoProvider(trino, rest) if trino and rest else trino or rest
+    if settings.adsb_provider in ("auto", "local") and sessionmaker is not None:
+        return LocalAdsb(sessionmaker)
+    return opensky
 
 
 def _view(snapshot: ContextSnapshot, cached: bool = False) -> SnapshotView:
@@ -133,11 +154,27 @@ def status(
     segment_id: int,
     provider: AdsbProvider | None,
     settings: ControlPlaneSettings,
+    spawn: Spawner | None = None,
 ) -> AdsbStatus:
-    """Cached state only; never calls the provider."""
-    if session.get(Segment, segment_id) is None:
+    """Cached state only; never calls the provider. With the local store it also says
+    which of the segment's days are imported (and restarts a stopped importer)."""
+    segment = session.get(Segment, segment_id)
+    if segment is None:
         raise NotFound(f"unknown segment: {segment_id}")
     snapshot = latest(session, segment_id)
+    importable = isinstance(provider, LocalAdsb)
+    days: list[DayView] = []
+    if importable and segment.capture_start_utc is not None:
+        t = int(segment.capture_start_utc.timestamp())
+        days = day_views(
+            session,
+            utc_days(
+                t - settings.adsb_window_before_s - TRAIL_PAD_S,
+                t + settings.adsb_window_after_s + TRAIL_PAD_S,
+            ),
+        )
+        if any(d.status in ("queued", "importing") for d in days):
+            ensure_importer(session, spawn)
     return AdsbStatus(
         configured=provider is not None,
         provider=provider.name if provider else None,
@@ -149,6 +186,8 @@ def status(
         window_after_s=settings.adsb_window_after_s,
         radius_nm=settings.adsb_radius_nm,
         snapshot=_view(snapshot, cached=True) if snapshot else None,
+        importable=importable,
+        days=days,
     )
 
 
@@ -184,19 +223,33 @@ def fetch(
     )
     try:
         result = provider.fetch(query)
+    except NotImported as exc:
+        raise NeedsImport(str(exc)) from exc
     except ProviderUnavailable as exc:
         raise Unavailable(str(exc)) from exc
     except ProviderError as exc:
         raise Upstream(str(exc)) from exc
     raw = {"columns": result.columns, "rows": result.rows}
     described = query.describe() | {"airport": icao}
+    if isinstance(provider, LocalAdsb):
+        described.pop("sql", None)  # the Trino statement does not apply
+    meta = dict(result.metadata)
+    info = meta.pop("aircraft_info", {})
+    source = meta.pop("source", None)
+    summary = summarize(result, query)
+    for aircraft in summary:
+        aircraft.update(info.get(aircraft["icao24"], {}))
+    provider_name = meta.get("provider", provider.name)
     snapshot = ContextSnapshot(
         segment_id=segment_id,
         kind="adsb",
-        provider=result.metadata.get("provider", provider.name),
-        source=SOURCE
-        if result.metadata.get("provider", provider.name) != "opensky-rest"
-        else "opensky REST /flights + /tracks (interpolated)",
+        provider=provider_name,
+        source=source
+        or (
+            SOURCE
+            if provider_name != "opensky-rest"
+            else "opensky REST /flights + /tracks (interpolated)"
+        ),
         query=described,
         query_sha256=hashlib.sha256(json.dumps(described, sort_keys=True).encode()).hexdigest(),
         t_start=datetime.fromtimestamp(query.t_start, UTC),
@@ -207,8 +260,8 @@ def fetch(
         response_sha256=hashlib.sha256(
             json.dumps(raw, sort_keys=True, default=str).encode()
         ).hexdigest(),
-        summary=summarize(result, query),
-        provider_meta=result.metadata,
+        summary=summary,
+        provider_meta=meta,
     )
     session.add(snapshot)
     session.flush()

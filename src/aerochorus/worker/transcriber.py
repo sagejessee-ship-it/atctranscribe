@@ -54,15 +54,20 @@ from aerochorus.worker.power import keep_awake
 log = logging.getLogger(__name__)
 
 # Give up on a model run after this many consecutive per-segment failures:
-# something is wrong with the server, not with the audio.
+# something is wrong with the server, not with the audio. A segment that already failed
+# in an earlier attempt (``PendingSegment.retry``) and fails again is not counted.
 MAX_CONSECUTIVE_ERRORS = 5
-# A single segment can crash a CrispASR backend (e.g. a GGML assertion on odd audio).
-# Such a crash costs that segment an error result and the server a restart; after
-# this many restarts in one model run the backend is treated as unstable.
+# A single segment can crash a CrispASR backend (e.g. a GGML assertion on odd audio), or
+# outlast the request timeout (fastconformer on a 16-minute recording): CrispASR keeps
+# working on a request the worker gave up on, so every later request would time out
+# behind it. Either costs that segment an error result and the server a restart; after
+# this many restarts in one model run the backend is treated as unstable. Restarts after
+# a segment that already failed in an earlier attempt are not counted.
 MAX_RESTARTS = 3
 # The first request is a smoke test of the server. If it fails, the next segments are
 # tried as the smoke test; after this many the backend is judged broken and the model
-# run fails without recording any results.
+# run fails without recording any results. A retry starts with the segments that failed
+# before; those are recorded as usual and the first fresh segment is the smoke test.
 MAX_SMOKE_SEGMENTS = 3
 # A progress line in the log this often, so a long model run visibly moves.
 PROGRESS_EVERY_S = 300.0
@@ -152,6 +157,7 @@ class SweepWorker:
         self.readers = {
             key: ReadOnlyCorpusReader(mount.root) for key, mount in config.sources.items()
         }
+        self._unreadable: set[str] = set()
         self.log_dir = self.tc.artifact_root.parent / "logs"
         for key, mount in config.sources.items():
             for label, path in (
@@ -195,16 +201,36 @@ class SweepWorker:
             return None
         return [held for held, _ in others], free - self.tc.vram_headroom_mb
 
+    def _readable_sources(self) -> list[str]:
+        """Sources this worker can read right now. Runs over a share that is down are not
+        claimed: loading a model only to hand the run straight back would repeat every
+        minute until the share returns."""
+        readable = []
+        for key, reader in sorted(self.readers.items()):
+            check = reader.check_available()
+            if check.ok:
+                readable.append(key)
+                if key in self._unreadable:
+                    self._unreadable.discard(key)
+                    log.info("source %s is readable again; its runs continue", key)
+            elif key not in self._unreadable:
+                self._unreadable.add(key)
+                log.warning("source %s unavailable (%s); its runs wait", key, check.reason)
+        return readable
+
     def process_next(self) -> Outcome | None:
         budget = self._vram_budget()
         if budget is None:
+            return None
+        sources = self._readable_sources()
+        if not sources:
             return None
         exclude, max_vram = budget
         claim = self.client.claim_model_run(
             ClaimRequest(
                 worker_name=self.config.worker_name,
                 lease_seconds=self.tc.lease_seconds,
-                source_keys=sorted(self.config.sources),
+                source_keys=sources,
                 hardware_profile=self.hardware_profile,
                 exclude_model_runs=exclude,
                 max_vram_mb=max_vram,
@@ -343,11 +369,12 @@ class SweepWorker:
             if server is not None:
                 server.stop()
         log.info(
-            "model run %s (%s): %s after %s segments",
+            "model run %s (%s): %s after %s segments%s",
             claim.sweep_model_id,
             model.logical_name,
             outcome.status,
             outcome.processed,
+            f" ({outcome.message})" if outcome.status == "released" and outcome.message else "",
         )
         return outcome
 
@@ -383,6 +410,11 @@ class SweepWorker:
             if not server.is_alive():
                 return True
         return False
+
+    @classmethod
+    def _must_restart(cls, server: Server, error_type: str | None) -> bool:
+        """Did the server die, or is it still busy with a request that timed out?"""
+        return error_type == "timeout" or cls._exited(server, error_type)
 
     def _serve(
         self,
@@ -425,14 +457,16 @@ class SweepWorker:
 
         def recover(segment: PendingSegment, result: ResultPost) -> Server:
             nonlocal restarts, smoke_done
-            restarts += 1
+            if not segment.retry:  # a known failure says nothing new about the backend
+                restarts += 1
             if restarts > MAX_RESTARTS:
                 raise CrispAsrError(
-                    f"CrispASR exited {restarts} times in this model run; last on "
+                    f"CrispASR restarted {restarts} times in this model run; last on "
                     f"{segment.relative_path}: {result.error_type}: {result.error_message}"
                 )
             log.warning(
-                "CrispASR exited on %s (%s); restarting (%s/%s)",
+                "CrispASR %s on %s (%s); restarting (%s/%s)",
+                "timed out" if result.error_type == "timeout" else "exited",
                 segment.relative_path,
                 result.error_message,
                 restarts,
@@ -478,7 +512,9 @@ class SweepWorker:
                     )
                     raise Released("worker stopping")
                 try:
-                    result = self._transcribe(claim, server, runtime, segment, smoke=not smoke_done)
+                    result = self._transcribe(
+                        claim, server, runtime, segment, smoke=not (smoke_done or segment.retry)
+                    )
                 except SmokeFailed as exc:
                     if exc.result is None:
                         raise
@@ -489,7 +525,7 @@ class SweepWorker:
                             f"smoke test failed on {len(held)} segments in a row; last: {exc}"
                         ) from exc
                     log.warning("%s; trying the next segment as the smoke test", exc)
-                    if self._exited(server, exc.result.error_type):
+                    if self._must_restart(server, exc.result.error_type):
                         server = recover(segment, exc.result)
                     continue
                 if not smoke_done and result.status != ResultStatus.ERROR:
@@ -499,13 +535,14 @@ class SweepWorker:
                     held.clear()
                 post(result)
                 if result.status == ResultStatus.ERROR:
-                    consecutive_errors += 1
+                    if not segment.retry:
+                        consecutive_errors += 1
                     if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                         raise CrispAsrError(
                             f"{consecutive_errors} consecutive errors; last: "
                             f"{result.error_type}: {result.error_message}"
                         )
-                    if self._exited(server, result.error_type):
+                    if self._must_restart(server, result.error_type):
                         server = recover(segment, result)
                 else:
                     consecutive_errors = 0

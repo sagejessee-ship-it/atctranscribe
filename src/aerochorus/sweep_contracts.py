@@ -438,6 +438,9 @@ class PendingSegment(BaseModel):
     sha256: str | None
     duration_ms: int | None
     ordinal: int | None = None  # position in the sweep (the worker's cursor)
+    # The segment already failed in an earlier attempt of this model run. Failing again
+    # says nothing new about the server, so it is never the smoke test.
+    retry: bool = False
 
 
 class PendingBatch(BaseModel):

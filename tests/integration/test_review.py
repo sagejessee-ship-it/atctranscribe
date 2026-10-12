@@ -206,6 +206,32 @@ def test_agreement_views(http, seeded):
     }
 
 
+def test_model_and_family_filters_have_a_result_or_agree(http, db, seeded):
+    # "agrees": in the largest exact group or the near group, each with 2+ families.
+    agrees = lambda **f: names(query(http, model_match="agrees", **f), seeded)  # noqa: E731
+    assert agrees(families=["whisper"]) == {"s1_consensus"}
+    assert agrees(families=["canary"]) == {"s1_consensus", "s3_near"}  # near: niner/nine
+    assert agrees(models=["parakeet-a"]) == {"s1_consensus", "s3_near"}
+    # canary-b agrees only with canary-a in s2: one family, so not agreement.
+    assert agrees(models=["canary-b"]) == set()
+
+    # A model that does not vote still has results, and is found by "has a result"...
+    whisper = db.scalar(select(Model).where(Model.logical_name == "whisper-a"))
+    whisper.ensemble_eligible = False
+    db.flush()
+    refresh_agreement(db, list(seeded.values()))
+    db.commit()
+    has_result = {"s1_consensus", "s2_disagree", "s4_problems"}
+    assert names(query(http, families=["whisper"]), seeded) == has_result
+    assert names(query(http, models=["whisper-a"]), seeded) == has_result
+    # ...but never agrees.
+    assert agrees(families=["whisper"]) == set()
+
+    facets = {m["name"]: m for m in http.get("/api/v1/review/facets").json()["models"]}
+    assert facets["whisper-a"]["voting"] is False and facets["canary-a"]["voting"] is True
+    assert facets["whisper-a"]["has_results"] is True and facets["whisper-a"]["family"] == "whisper"
+
+
 def test_sort_and_pagination(http, seeded):
     page = query(http, sort="exact_families", descending=True, limit=2)
     assert page["total"] == 4 and len(page["rows"]) == 2

@@ -125,9 +125,9 @@ export function AirportMap({
   onHighlight?: (icao: string | null) => void;
   defaultRange?: number;
 }) {
-  const [range, setRange] = useState<number>(
-    RANGES.find((r) => r >= defaultRange) ?? RANGES[RANGES.length - 1],
-  );
+  // Follows the default (which arrives with the ADS-B status) until a range is picked.
+  const [picked, setRange] = useState<number | null>(null);
+  const range = picked ?? RANGES.find((r) => r >= defaultRange) ?? RANGES[RANGES.length - 1];
   const lat0 = profile.latitude;
   const lon0 = profile.longitude;
   const { scale, xy } = useMemo(() => project(lat0 ?? 0, lon0 ?? 0, range), [lat0, lon0, range]);

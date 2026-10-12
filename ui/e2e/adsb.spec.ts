@@ -25,7 +25,7 @@ test("ADS-B fetched on demand, cached on reopen, refreshed explicitly", async ({
   await expect(table).toContainText("4000"); // metres → feet
   const provenance = page.getByTestId("adsb-provenance");
   await expect(provenance).toContainText("minio.osky.state_vectors_data4");
-  await expect(provenance).toContainText("10 nm of KBWI");
+  await expect(provenance).toContainText("20 nm of KBWI");
   expect(await adsbCalls(page)).toBe(before + 1);
   const snapshot = (await provenance.textContent())!.match(/snapshot #(\d+)/)![1];
 

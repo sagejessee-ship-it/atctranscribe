@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -87,8 +87,13 @@ class ReviewFilters(BaseModel):
     channels: list[str] = Field(default_factory=list)
     utc_from: datetime | None = None
     utc_to: datetime | None = None
-    models: list[str] = Field(default_factory=list)  # a result from any of these exists
+    # Any of these models / architecture families...
+    models: list[str] = Field(default_factory=list)
     families: list[str] = Field(default_factory=list)
+    # ...produced a result for the segment ("result"), or is in its agreeing group: the
+    # largest exact-match group or the near-match group, each with 2+ families ("agrees").
+    # Only voting (ensemble-eligible) models can agree.
+    model_match: Literal["result", "agrees"] = "result"
     min_models: int | None = Field(default=1, ge=0)  # 0 includes untranscribed segments
     min_success: int | None = Field(default=None, ge=0)  # models that produced words
     min_exact_providers: int | None = Field(default=None, ge=1)

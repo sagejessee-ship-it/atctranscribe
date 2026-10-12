@@ -48,6 +48,7 @@ def database_url() -> str:
 @pytest.fixture
 def app(database_url):
     app = create_app(ControlPlaneSettings(database_url=database_url))
+    app.state.adsb_spawn = None  # never a real adsb.lol download from a test
     yield app
     tables = ", ".join(
         f"{t.schema}.{t.name}" if t.schema else t.name for t in Base.metadata.sorted_tables

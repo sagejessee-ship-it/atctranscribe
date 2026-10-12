@@ -1,4 +1,5 @@
 import type {
+  AdsbDay,
   AdsbSnapshot,
   AdsbStatus,
   AnnotationSave,
@@ -78,6 +79,8 @@ export const api = {
   adsbStatus: (id: number) => request<AdsbStatus>("GET", `/api/v1/context/adsb/${id}`),
   adsbFetch: (id: number, refresh = false) =>
     request<AdsbSnapshot>("POST", `/api/v1/context/adsb/${id}${refresh ? "?refresh=true" : ""}`),
+  adsbImport: (start: string, end?: string) =>
+    request<AdsbDay[]>("POST", "/api/v1/context/adsb/days", { start, end: end ?? null }),
 };
 
 export const audioUrl = (segmentId: number) => `/audio/${segmentId}`;

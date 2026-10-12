@@ -125,6 +125,13 @@ class ApiClient:
         params = {"limit": limit} if limit else None
         return self._request("POST", "/api/v1/agreement/refresh", params=params)["refreshed"]
 
+    def adsb_import(self, start: str, end: str | None = None) -> list[dict[str, Any]]:
+        return self._request("POST", "/api/v1/context/adsb/days", json={"start": start, "end": end})
+
+    def adsb_days(self, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
+        params = {k: v for k, v in (("start", start), ("end", end)) if v}
+        return self._request("GET", "/api/v1/context/adsb/days", params=params or None)
+
     def put_airport(self, profile: dict[str, Any]) -> dict[str, Any]:
         return self._request("PUT", f"/api/v1/airports/{profile['icao']}", json=profile)
 
