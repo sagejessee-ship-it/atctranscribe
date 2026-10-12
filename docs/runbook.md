@@ -900,6 +900,22 @@ control plane's limits:
 Prices come from OpenRouter's public model list. If it is unreachable, the
 `AEROCHORUS_ADJUDICATION_PRICE_*` defaults are used.
 
+### Self-hosted adjudicator (optional, free)
+
+A local audio LLM (vLLM) does the same job without per-request cost. It also
+runs over far more segments, and an agreement gate lists only the doubtful ones
+for the paid model. Details, profiles and the H100 deployment are in
+[LOCAL_ADJUDICATOR.md](deployment/LOCAL_ADJUDICATOR.md) and
+[ADR-025](adr/0025-self-hosted-adjudication.md).
+
+```powershell
+docker compose -f deploy/vllm/compose.yml --profile local-small-fp8 up -d   # the model server
+uv run aerochorus adjudicate submit --profile local-small-fp8 --segments 3235,660
+uv run aerochorus adjudicate run --profile local-small-fp8
+uv run aerochorus adjudicate gate <batch>          # accept / escalate; writes the escalation CSV
+uv run aerochorus adjudicate eval --profile local-small-fp8 --source atco2_fixed --n 100
+```
+
 ## 14. A full day on this PC (Windows, RTX 5080): the pre-migration check
 
 This runs everything end to end on the dev PC before the Linux move:
