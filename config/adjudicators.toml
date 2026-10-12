@@ -47,6 +47,30 @@ args = [
   "--max-num-seqs", "8",
 ]
 
+[profiles.local-small-fp8]
+description = "Voxtral Mini 3B with FP8 weights (online): fits beside a running sweep on 16 GB"
+model = "local/voxtral-mini-3b-2507-fp8"
+url = "http://127.0.0.1:8100/v1"
+system_prompt = "user"
+max_tokens = 1024
+temperature = 0.0
+max_audio_inputs = 5
+timeout_s = 120
+concurrency = 2
+
+[profiles.local-small-fp8.vllm]
+model = "mistralai/Voxtral-Mini-3B-2507"
+gpus = 1
+vram_gb = 8
+args = [
+  "--tokenizer-mode", "mistral", "--config-format", "mistral", "--load-format", "mistral",
+  "--quantization", "fp8",
+  "--max-model-len", "8192",
+  "--limit-mm-per-prompt", '{"audio": 5}',
+  "--gpu-memory-utilization", "0.50",
+  "--max-num-seqs", "4",
+]
+
 [profiles.h100-large]
 description = "Qwen3-Omni 30B-A3B Thinking, bf16, tensor parallel over two H100s"
 model = "local/qwen3-omni-30b-a3b-thinking"

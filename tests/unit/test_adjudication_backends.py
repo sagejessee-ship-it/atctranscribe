@@ -117,6 +117,27 @@ def test_a_profile_is_chosen_by_env_and_overridden_per_host(monkeypatch):
         resolve_profile(AdjudicatorSettings(_env_file=None))
 
 
+def test_every_self_hosted_profile_starts_a_server_that_serves_its_model_id():
+    """deploy/vllm/serve.py (stdlib, inside the vLLM image) reads the same file."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("serve", REPO / "deploy" / "vllm" / "serve.py")
+    serve = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(serve)
+    path = REPO / "config" / "adjudicators.toml"
+    for name, profile in load_profiles(path).profiles.items():
+        cmd = serve.command(path, name)
+        assert cmd[:3] == ["vllm", "serve", profile.vllm.model]
+        assert cmd[cmd.index("--served-model-name") + 1] == profile.model
+        assert cmd[-len(profile.vllm.args) :] == profile.vllm.args
+        if profile.vllm.gpus > 1:  # the args must actually use the GPUs the docs promise
+            assert cmd[cmd.index("--tensor-parallel-size") + 1] == str(profile.vllm.gpus)
+        limit = json.loads(cmd[cmd.index("--limit-mm-per-prompt") + 1])
+        assert limit["audio"] >= profile.max_audio_inputs  # the server accepts every input
+    with pytest.raises(SystemExit, match="unknown profile"):
+        serve.command(path, "nope")
+
+
 # --- the OpenAI-compatible backend against a mock server ----------------------------------------
 
 
