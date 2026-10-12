@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from aerochorus.adjudication_contracts import LOCAL_MODEL_PREFIX
+from aerochorus.adjudication_contracts import LOCAL_MODEL_PREFIX, GateConfig
 from aerochorus.settings import AdjudicatorSettings
 
 DEFAULT_PROFILES = Path("config/adjudicators.toml")
@@ -45,19 +45,6 @@ class VllmServe(BaseModel):
     args: list[str] = Field(default_factory=list)
     gpus: int = Field(default=1, ge=1)
     vram_gb: float | None = None  # expected use per GPU, for docs and the pre-flight check
-
-
-class GateConfig(BaseModel):
-    """Accept an adjudicated transcript without a paid second opinion when enough
-    independent ASR families say the same thing (``aerochorus.adjudication.gate``)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    min_families: int = Field(default=2, ge=1)
-    min_confidence: float = Field(default=0.0, ge=0, le=1)
-    # 1.0: identical after normalisation. Lower: order-aware similarity at least this.
-    min_similarity: float = Field(default=1.0, gt=0, le=1)
-    include_research_only: bool = False  # research-only models never vote by default
 
 
 class AdjudicatorProfile(BaseModel):

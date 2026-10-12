@@ -16,6 +16,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from aerochorus.adjudication.gate import Vote, decide
 from aerochorus.adjudication.openrouter import fetch_pricing
 from aerochorus.adjudication.prompt import (
     PROMPT_VERSION,
@@ -40,6 +41,9 @@ from aerochorus.adjudication_contracts import (
     AdjudicationSelection,
     BatchStatus,
     ClaimedAdjudication,
+    GateConfig,
+    GateItem,
+    GateReport,
     ItemStatus,
     Pricing,
     RunnerSeen,
@@ -62,8 +66,10 @@ from aerochorus.db.models import (
     AdjudicationItem,
     AnnotationVersion,
     CorpusSource,
+    Model,
     ReviewSample,
     Segment,
+    SweepRunModel,
     TranscriptionResult,
 )
 from aerochorus.review_contracts import ReviewStatus, SourceRole, TextOrigin, TrainingLabel
@@ -791,6 +797,91 @@ def post_result(
     _finish_if_drained(session, batch, now)
     session.flush()
     return item_view(item, batch)
+
+
+# --- the agreement gate (ADR-025) ---------------------------------------------------------------
+
+
+def votes_by_segment(session: Session, segment_ids: list[int]) -> dict[int, list[Vote]]:
+    """Each segment's current hypotheses (the newest result per model), as gate votes."""
+    rows = session.execute(
+        select(
+            TranscriptionResult.segment_id,
+            Model.id,
+            Model.logical_name,
+            Model.architecture_family,
+            Model.ensemble_eligible,
+            TranscriptionResult.status,
+            TranscriptionResult.text,
+        )
+        .join(SweepRunModel, SweepRunModel.id == TranscriptionResult.sweep_run_model_id)
+        .join(Model, Model.id == SweepRunModel.model_id)
+        .where(TranscriptionResult.segment_id.in_(segment_ids))
+        .order_by(TranscriptionResult.segment_id, Model.id, TranscriptionResult.created_at.desc())
+    ).all()
+    votes: dict[int, list[Vote]] = {}
+    seen: set[tuple[int, int]] = set()
+    for segment_id, model_id, name, family, eligible, status, text in rows:
+        if (segment_id, model_id) in seen:  # superseded by a newer result of the same model
+            continue
+        seen.add((segment_id, model_id))
+        votes.setdefault(segment_id, []).append(
+            Vote(family, text, str(status), bool(eligible), name)
+        )
+    return votes
+
+
+def gate_item(item: AdjudicationItem, votes: list[Vote], config: GateConfig) -> GateItem:
+    if item.status in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+        decision, reason, agreeing, voting = "pending", "not_finished", (), 0
+    elif item.status != ItemStatus.DONE:
+        decision, reason, agreeing, voting = "escalate", f"not_adjudicated_{item.status}", (), 0
+    else:
+        d = decide(item.transcript, item.speech_present, item.confidence, votes, config)
+        decision = "accept" if d.accept else "escalate"
+        reason, agreeing, voting = d.reason, d.agreeing_families, d.voting_families
+    return GateItem(
+        item_id=item.id,
+        segment_id=item.segment_id,
+        status=item.status,
+        decision=decision,
+        reason=reason,
+        transcript=item.transcript,
+        confidence=item.confidence,
+        agreeing_families=list(agreeing),
+        voting_families=voting,
+    )
+
+
+def gate_report(session: Session, batch_id: int, config: GateConfig) -> GateReport:
+    """Which items the ensemble corroborates (accept) and which need a second opinion."""
+    batch = session.get(AdjudicationBatch, batch_id)
+    if batch is None:
+        raise NotFound(f"unknown adjudication batch: {batch_id}")
+    items = list(
+        session.scalars(
+            select(AdjudicationItem)
+            .where(AdjudicationItem.batch_id == batch_id)
+            .order_by(AdjudicationItem.id)
+        )
+    )
+    votes = votes_by_segment(session, [i.segment_id for i in items])
+    gated = [gate_item(i, votes.get(i.segment_id, []), config) for i in items]
+    counts: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for g in gated:
+        counts[g.decision] = counts.get(g.decision, 0) + 1
+        reasons[g.reason] = reasons.get(g.reason, 0) + 1
+    decided = counts.get("accept", 0) + counts.get("escalate", 0)
+    return GateReport(
+        batch_id=batch.id,
+        model=batch.model,
+        gate=config,
+        counts=counts,
+        reasons=reasons,
+        accept_rate=round(counts.get("accept", 0) / decided, 4) if decided else None,
+        items=gated,
+    )
 
 
 # --- accepting as silver ------------------------------------------------------------------------

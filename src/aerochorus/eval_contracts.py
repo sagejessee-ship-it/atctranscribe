@@ -112,3 +112,46 @@ class EvalSegmentRow(BaseModel):
     reference: str
     reference_scoring: str
     results: dict[str, dict[str, Any]]
+
+
+# --- adjudicator evaluation (ADR-025) -----------------------------------------------------------
+
+
+class CalibrationBin(BaseModel):
+    confidence_range: str
+    items: int
+    mean_confidence: float | None
+    exact_match_rate: float | None
+
+
+class AdjudicationEvalBatch(BaseModel):
+    """One adjudication batch scored against gold: accuracy, calibration, the gate."""
+
+    batch_id: int
+    model: str
+    prompt_version: int
+    items: int
+    scored: int  # finished items with gold (failed ones score as empty answers)
+    failed: int
+    pending: int
+    without_gold: int
+    reference_tokens: int
+    token_error_rate: float | None  # number format as produced
+    token_error_rate_canonical: float | None  # niner/nine, digits/words folded
+    exact_match_rate: float | None  # canonical
+    entities: dict[str, EntityScore]  # canonical; callsign recall is the one to watch
+    calibration: list[CalibrationBin]
+    expected_calibration_error: float | None
+    brier_score: float | None
+    gate: dict[str, Any]
+    baseline: dict[str, Any]  # the ASR hypotheses on the same segments
+    latency_ms_p50: float | None
+    latency_ms_p95: float | None
+
+
+class AdjudicationEvalReport(BaseModel):
+    gate: dict[str, Any]
+    split: str | None
+    english_only: bool
+    batches: list[AdjudicationEvalBatch]
+    notes: list[str]

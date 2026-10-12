@@ -42,6 +42,7 @@ WRITERS = {
     "faa_nasr.py",
     "dataset_export.py",
     "cli_deploy.py",  # writes an operator-requested inventory report (--out)
+    "cli_adjudicate.py",  # writes the agreement gate's escalation list (--escalations)
 }
 
 

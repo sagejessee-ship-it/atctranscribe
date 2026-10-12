@@ -20,7 +20,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aerochorus.review_contracts import ReviewFilters
 
@@ -231,6 +231,41 @@ class AdjudicationResultPost(BaseModel):
     cost_usd: float | None = Field(default=None, ge=0)
     error: str | None = None
     retryable: bool = False  # failed but worth another attempt (rate limit, outage)
+
+
+class GateConfig(BaseModel):
+    """Accept an adjudicated transcript without a paid second opinion when enough
+    independent ASR families say the same thing (``aerochorus.adjudication.gate``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_families: int = Field(default=2, ge=1)
+    min_confidence: float = Field(default=0.0, ge=0, le=1)
+    # 1.0: identical after normalisation. Lower: order-aware similarity at least this.
+    min_similarity: float = Field(default=1.0, gt=0, le=1)
+    include_research_only: bool = False  # research-only models never vote by default
+
+
+class GateItem(BaseModel):
+    item_id: int
+    segment_id: int
+    status: ItemStatus
+    decision: Literal["accept", "escalate", "pending"]
+    reason: str
+    transcript: str | None
+    confidence: float | None
+    agreeing_families: list[str]
+    voting_families: int
+
+
+class GateReport(BaseModel):
+    batch_id: int
+    model: str
+    gate: GateConfig
+    counts: dict[str, int]  # by decision
+    reasons: dict[str, int]
+    accept_rate: float | None  # of decided items
+    items: list[GateItem]
 
 
 # --- accepting results as silver ----------------------------------------------------------------

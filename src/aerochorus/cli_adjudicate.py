@@ -192,6 +192,137 @@ def cmd_adjudicate_submit(args: argparse.Namespace) -> int:
     return 0
 
 
+def gate_args(p: argparse.ArgumentParser) -> None:
+    """Agreement-gate overrides (defaults: [gate] in config/adjudicators.toml)."""
+    p.add_argument("--min-families", type=int, default=None, help="ASR families that must agree")
+    p.add_argument("--min-confidence", type=float, default=None)
+    p.add_argument("--min-similarity", type=float, default=None, help="1.0 = identical")
+    p.add_argument(
+        "--include-research-only", action="store_true", default=None,
+        help="let research-only models vote",
+    )  # fmt: skip
+
+
+def gate_params(args: argparse.Namespace) -> dict:
+    from aerochorus.adjudication.profiles import load_profiles
+    from aerochorus.adjudication_contracts import GateConfig
+    from aerochorus.settings import AdjudicatorSettings
+
+    try:
+        defaults = load_profiles(AdjudicatorSettings().adjudicator_profiles).gate
+    except FileNotFoundError:
+        defaults = GateConfig()
+    params = defaults.model_dump()
+    for key in params:
+        value = getattr(args, key, None)
+        if value is not None:
+            params[key] = value
+    return params
+
+
+def cmd_adjudicate_gate(args: argparse.Namespace) -> int:
+    """Accept or escalate each item of a batch; write the escalations; optionally accept."""
+    import csv
+
+    from aerochorus.cli import _client
+
+    params = gate_params(args)
+    path = Path(args.escalations or f"adjudication-escalations-{args.batch_id}.csv")
+    with _client(args) as api:
+        report = api.adjudication_gate(args.batch_id, **params)
+        counts = report["counts"]
+        reasons = ", ".join(f"{k} {v}" for k, v in sorted(report["reasons"].items()))
+        print(
+            f"batch #{report['batch_id']} ({report['model']}): accept {counts.get('accept', 0)}, "
+            f"escalate {counts.get('escalate', 0)}, pending {counts.get('pending', 0)} "
+            f"(accept rate {report['accept_rate']}); reasons: {reasons}"
+        )
+        escalated = [i for i in report["items"] if i["decision"] == "escalate"]
+        with path.open("w", newline="", encoding="utf-8") as out:
+            writer = csv.writer(out)
+            writer.writerow(
+                ["segment_id", "item_id", "reason", "confidence", "agreeing_families",
+                 "voting_families", "transcript"]
+            )  # fmt: skip
+            for i in escalated:
+                writer.writerow(
+                    [i["segment_id"], i["item_id"], i["reason"], i["confidence"],
+                     " ".join(i["agreeing_families"]), i["voting_families"],
+                     i["transcript"] or ""]
+                )  # fmt: skip
+        print(f"{len(escalated)} escalations written to {path} (for a paid second opinion)")
+        if args.accept:
+            ids = [i["item_id"] for i in report["items"] if i["decision"] == "accept"]
+            if not ids:
+                print("nothing to accept")
+                return 0
+            outcome = api.accept_adjudications(
+                {
+                    "item_ids": ids,
+                    "annotator": args.annotator,
+                    "notes": f"agreement gate: {params['min_families']}+ ASR families agree",
+                }
+            )
+            skipped = ", ".join(f"{k} {v}" for k, v in sorted(outcome["skipped"].items()))
+            print(
+                f"accepted as silver: {outcome['applied']}"
+                + (f"; skipped {skipped}" if skipped else "")
+            )
+    return 0
+
+
+def cmd_adjudicate_eval(args: argparse.Namespace) -> int:
+    """Run a profile over labelled segments (a benchmark source) and score it against gold."""
+    from aerochorus.adjudication.errors import BackendFatal
+    from aerochorus.cli import _client
+    from aerochorus.cli_eval import _eval_client, print_adjudication_report
+    from aerochorus.settings import AdjudicatorSettings
+    from aerochorus.worker.adjudicator import Adjudicator
+    from aerochorus.worker.config import load_worker_config
+    from aerochorus.worker.fs import ReadOnlyCorpusReader
+
+    settings = AdjudicatorSettings()
+    try:
+        backend, default_concurrency, profile = _backend(args, settings)
+    except (LookupError, ValueError) as exc:
+        print(exc)
+        return 2
+    if profile is None:
+        print("adjudicate eval runs a self-hosted profile: pass --profile")
+        return 2
+    config = load_worker_config(args.config)
+    readers = {k: ReadOnlyCorpusReader(m.root) for k, m in config.sources.items()}
+    try:
+        backend.check()
+    except BackendFatal as exc:
+        print(exc)
+        return 2
+    batch_ids = list(args.compare or [])
+    with _client(args) as api:
+        if not args.no_new_batch:
+            batch = submit_batch(api, profile, _selection(args), args)
+            if batch is None:
+                return 1
+            batch_ids.insert(0, batch["id"])
+            print(f"batch #{batch['id']}: {batch['item_count']} items")
+        runner = f"{config.worker_name}/{profile.name}"
+        summary = Adjudicator(api, readers, backend, runner).run(
+            concurrency=args.concurrency or default_concurrency
+        )
+        print(
+            f"run: {summary.stats()}" + (f"; stopped: {summary.stopped}" if summary.stopped else "")
+        )
+    if not batch_ids:
+        print("nothing to score: no new batch and no --compare")
+        return 1
+    with _eval_client(args) as client:
+        report = client.evaluate_adjudications(
+            batch_ids, split=args.split, english_only=args.english_only, **gate_params(args)
+        )
+    print_adjudication_report(report)
+    return 1 if summary.stopped else 0
+
+
 def cmd_adjudicate_list(args: argparse.Namespace) -> int:
     from aerochorus.cli import _client
 
@@ -261,6 +392,30 @@ def register(groups, api_opt) -> None:
     _selection_args(p)
     api_opt(p)
     p.set_defaults(func=cmd_adjudicate_submit)
+    p = adjudicate.add_parser(
+        "gate", help="accept items enough ASR families corroborate; write the escalations"
+    )
+    p.add_argument("batch_id", type=int)
+    p.add_argument("--escalations", help="CSV path (default adjudication-escalations-<batch>.csv)")
+    p.add_argument("--accept", action="store_true", help="store accepted items as silver")
+    p.add_argument("--annotator", default="agreement-gate")
+    gate_args(p)
+    api_opt(p)
+    p.set_defaults(func=cmd_adjudicate_gate)
+    p = adjudicate.add_parser(
+        "eval", help="run a profile over a labelled source and score it against gold"
+    )
+    p.add_argument("--profile", default=None, help="self-hosted adjudicator profile")
+    p.add_argument("--compare", type=int, action="append", help="also score these batches")
+    p.add_argument("--no-new-batch", action="store_true", help="only finish and score --compare")
+    p.add_argument("--split", choices=["calibration", "test"])
+    p.add_argument("--english-only", action="store_true")
+    p.add_argument("--concurrency", type=int, default=None, choices=range(1, 9))
+    p.add_argument("--ffmpeg", default=None)
+    _selection_args(p)
+    gate_args(p)
+    api_opt(p)
+    p.set_defaults(func=cmd_adjudicate_eval, source="atco2_fixed", n=50)
     p = adjudicate.add_parser("list", help="recent adjudication batches")
     api_opt(p)
     p.set_defaults(func=cmd_adjudicate_list)
