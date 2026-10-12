@@ -14,7 +14,12 @@
 name: aerochorus-vllm
 
 x-vllm: &vllm
-  image: vllm/vllm-openai:${VLLM_VERSION:-v0.31.0}
+  # The pinned vLLM image plus its audio extra (Dockerfile); built here on first `up`.
+  image: aerochorus-vllm:${VLLM_VERSION:-v0.31.0}
+  build:
+    context: .
+    args:
+      VLLM_VERSION: ${VLLM_VERSION:-v0.31.0}
   entrypoint: ["python3", "/deploy/serve.py"]
   ipc: host  # shared memory for tensor parallelism (vLLM's recommendation)
   environment:
@@ -22,7 +27,7 @@ x-vllm: &vllm
     VLLM_API_KEY: ${AEROCHORUS_ADJUDICATOR_API_KEY:-}  # empty: no key required
     AEROCHORUS_ADJUDICATOR_PROFILES: /config/adjudicators.toml
     CUDA_VISIBLE_DEVICES: ${VLLM_GPUS:-0}  # e.g. 0,1 for a two-GPU profile
-    VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}  # one-off flags without editing the profile
+    AEROCHORUS_VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}  # one-off flags (not VLLM_*: vLLM warns)
   volumes:
     - ${AEROCHORUS_ADJUDICATOR_PROFILES_FILE:-../../config/adjudicators.toml}:/config/adjudicators.toml:ro
     - ./serve.py:/deploy/serve.py:ro

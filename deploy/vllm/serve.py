@@ -4,7 +4,7 @@ Reads ``[profiles.<name>.vllm]`` from the adjudicator profiles file (the one the
 runner reads too) and execs::
 
     vllm serve <hf model> --served-model-name <profile model> \
-        --host 0.0.0.0 --port 8000 <profile args> <VLLM_EXTRA_ARGS>
+        --host 0.0.0.0 --port 8000 <profile args> <AEROCHORUS_VLLM_EXTRA_ARGS>
 
 so the served name is the id batches are recorded under. Standard library only: it
 runs inside the vLLM image. ``--dry-run`` prints the command instead. A key, if the
@@ -41,7 +41,7 @@ def command(profiles_path: str | Path, name: str, *, port: int = 8000) -> list[s
         "--served-model-name", profile["model"],
         "--host", "0.0.0.0", "--port", str(port),
         *serve.get("args", []),
-        *shlex.split(os.environ.get("VLLM_EXTRA_ARGS", "")),
+        *shlex.split(os.environ.get("AEROCHORUS_VLLM_EXTRA_ARGS", "")),
     ]  # fmt: skip
 
 

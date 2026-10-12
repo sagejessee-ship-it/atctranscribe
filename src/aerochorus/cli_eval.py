@@ -185,7 +185,7 @@ def print_adjudication_report(report) -> None:
                 if best
                 else "",
                 "ensemble": _fmt(b.baseline["representative_token_error_rate_canonical"]),
-                "p50 ms": _fmt(b.latency_ms_p50),
+                "p50 ms": "" if b.latency_ms_p50 is None else f"{b.latency_ms_p50:.0f}",
             }
         )
     print(_table(rows, list(rows[0]) if rows else ["batch"]))
