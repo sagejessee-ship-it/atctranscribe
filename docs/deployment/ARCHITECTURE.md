@@ -22,7 +22,8 @@ Docker Compose project "aerochorus" (deploy/linux/compose.yml, restart: unless-s
       └─ launches the pinned CrispASR CUDA 12 binary (in the image, sha256 recorded),
          ONE model resident at a time
   backup              postgres:17, nightly pg_dump + counts + config
-  adjudicator         aerochorus-app, optional profile (ADR-022), OpenRouter key
+  adjudicator         aerochorus-worker, optional profile: OpenRouter key (ADR-022) or a
+                      self-hosted vLLM profile (ADR-025) reached over HTTP
   cli                 aerochorus-worker, one-off commands (`aerochorus …` wrapper)
 
 /srv/aerochorus/  config/ (aerochorus.env, worker.toml)   deploy/ (kit of the running tag)
@@ -32,6 +33,11 @@ images: built on the Windows PC (deploy/linux/package.ps1), shipped as a bundle
         │
         ▼  HTTP :8080 (trusted LAN, no auth, never port-forwarded)
 LAN BROWSERS: Intel Mac, desktop PCs, other devices
+
+OPTIONAL MODEL SERVER for the self-hosted adjudicator (ADR-025): deploy/vllm/compose.yml
+  vLLM (needs compute capability >= 7.0: not the GTX 1070) on the 5080 box or an H100 host,
+  serving one profile of config/adjudicators.toml at http://<gpu-host>:8100/v1 (key required
+  off-loopback); the adjudicator above, or `aerochorus adjudicate run` on the 5080, calls it
 
 OPTIONAL EXTRA WORKER: Windows RTX 5080 box
   worker (Docker CrispASR CUDA image) → http://<linux-host>:8000 when AEROCHORUS_API_BIND=<LAN IP>

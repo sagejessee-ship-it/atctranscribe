@@ -74,6 +74,18 @@ The server side reads `deploy/vllm/.env` (copy `.env.example`):
 | `VLLM_VERSION` | image tag |
 | `VLLM_EXTRA_ARGS` | one-off flags |
 
+### Where the model server can run
+
+vLLM needs an NVIDIA GPU with compute capability ≥ 7.0. These qualify:
+- the RTX 5080 (12.0);
+- H100s (9.0).
+
+The Linux host's GTX 1070 (Pascal, 6.1) does not. On that host the
+`adjudicator` container only runs the client, calling a vLLM server elsewhere
+([LINUX_DEPLOYMENT_RUNBOOK.md](LINUX_DEPLOYMENT_RUNBOOK.md) §14). The data
+migration ([MIGRATION.md](MIGRATION.md)) carries adjudication results in the
+database dump. Weights and the vLLM image are rebuilt on the GPU host.
+
 ## Run it on this PC (RTX 5080, Docker Desktop)
 
 Docker Desktop's WSL2 backend passes the GPU to containers, as it does for CrispASR.
@@ -222,6 +234,30 @@ next to the small model's, never mixed with them.
 | every item `unusable answer` | the model ignores the schema. Check the stored response with `adjudicate show`. Try `structured_output = false`, or another profile. |
 | `audio could not be prepared` | ffmpeg could not decode the file. The item fails; the batch continues. |
 | no squelch splitting | ffmpeg not found (PATH, `AEROCHORUS_FFMPEG` or `--ffmpeg`). The runner prints a warning and sends the original file. |
+
+## What it is good for now, and what to measure next
+
+**A good selector, not yet an adjudicator.** On the first BWI clips the small
+model mostly picked the best existing hypothesis, and on ATCO2 it beat the
+best single ASR model. That is useful in three ways:
+- as the starting text when correcting a segment ("Use as correction" in the
+  inspector);
+- as a hint for the paid model: run the paid model on the gate's escalations;
+- as a sort key for annotation work.
+
+Its confidence is meaningless, so don't use it for anything.
+
+**ATCO2 is a weak proxy for this corpus.** It is non-native European traffic,
+with other airports, phraseology and gold spelling conventions ("Juliett",
+"it is"). The decision that matters is whether the gate's accepted side is
+clean on **BWI**, and BWI has only 13 human gold segments so far. The next
+step is to annotate a few hundred BWI segments as gold in the review UI.
+- Stratify the sample: consensus, partial agreement and disagreement (the
+  Review page's saved views).
+- Start each from the adjudicated text, then listen and correct.
+- Then evaluate profiles and the gate on BWI gold as well as ATCO2. Scoring
+  against human gold annotations is not in the evaluation yet; it is a small
+  extension of `evaluate_adjudications`.
 
 ## Measured
 

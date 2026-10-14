@@ -111,7 +111,7 @@ It ends with the review UI address.
 | `edge` | **review web UI**, API proxy, read-only sha256-checked audio | **LAN :8080** |
 | `worker` | scans, heartbeats, queued sweeps; CrispASR on the GPU, one model at a time | — |
 | `backup` | nightly `pg_dump` at 03:00 into `/srv/aerochorus/backups` | — |
-| `adjudicator` | optional and paid (ADR-022); only if `AEROCHORUS_ADJUDICATOR=1` | outbound HTTPS |
+| `adjudicator` | optional; only if `AEROCHORUS_ADJUDICATOR=1`. Paid OpenRouter (ADR-022), or a self-hosted vLLM model on another GPU host (ADR-025) | outbound HTTPS, or HTTP to the vLLM host |
 | `cli` | one-off commands via `aerochorus …` | — |
 
 There is no authentication. Keep the UI on the trusted LAN and never
@@ -297,6 +297,18 @@ them off the host.
 - **Model adjudication** (ADR-022, paid): set `AEROCHORUS_ADJUDICATOR=1` and
   `AEROCHORUS_OPENROUTER_API_KEY=…` in `aerochorus.env`, then run `$D up`.
   It works only on batches confirmed in the UI under a cost cap.
+- **Self-hosted adjudicator** (ADR-025, free per request). vLLM needs compute
+  capability ≥ 7.0, so the model server cannot run on this GTX 1070 (Pascal,
+  6.1). Run it on the 5080 PC or an H100 host with `deploy/vllm`. Then set
+  these in `aerochorus.env` and run `$D up`:
+  - `AEROCHORUS_ADJUDICATOR=1`
+  - `AEROCHORUS_ADJUDICATOR_PROFILE=<profile>`
+  - `AEROCHORUS_ADJUDICATOR_URL=http://<gpu-host>:8100/v1`
+  - `AEROCHORUS_ADJUDICATOR_API_KEY=…`
+
+  The `adjudicator` container then takes only that profile's batches. Queue
+  them with `$D cli adjudicate submit --profile <profile> …`. See
+  [LOCAL_ADJUDICATOR.md](LOCAL_ADJUDICATOR.md).
 - **The 5080 PC as an extra worker**: set `AEROCHORUS_API_BIND=<host LAN
   IP>` in `aerochorus.env` and run `$D up`. On Windows, set `api_url =
   "http://<linux-host>:8000"` in the worker config. The PC keeps its own

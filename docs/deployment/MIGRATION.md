@@ -12,6 +12,9 @@ been verified.
 | ATCO2 benchmark clips (AeroChorus-derived) | `…\corpora\atco2_fixed` | 112 MB | copied to `/srv/aerochorus/corpora/atco2_fixed` |
 | model files | `…\models` | 8.6 GB | **not copied**: re-downloaded and verified by sha256 on Linux |
 | collector audio | `\\192.168.68.84\bwi` | ~1 TB | **never copied**: mounted read-only |
+| adjudication batches and results (ADR-022, ADR-025) | in PostgreSQL | small | travel in the dump, including self-hosted (`local/…`) results |
+| self-hosted adjudicator weights (vLLM) | Docker volume `aerochorus-vllm_vllm-cache` | 9.4 GB (Voxtral Mini) | **not copied**: downloaded again on whichever GPU host runs `deploy/vllm` (never the GTX 1070) |
+| vLLM image | `aerochorus-vllm:<version>` (32 GB) | | **not copied**: built on the GPU host by `deploy/vllm/compose.yml` |
 
 Contents on 2026-09-27: 448,899 segments; 7 models (now 18 in the catalog);
 6 sweeps; 27,823 transcription results; 877 ATCO2 gold references;
@@ -69,6 +72,10 @@ and qualify ([LINUX_DEPLOYMENT_RUNBOOK.md](LINUX_DEPLOYMENT_RUNBOOK.md) §10).
 - Keep the Windows database untouched for a while as a fallback, but do not
   run both control planes against the same collector with workers writing
   to both.
+- The self-hosted adjudicator's model server stays on a GPU that vLLM supports:
+  the 5080 box or an H100 host. Point the Linux `adjudicator` container at it:
+  [LINUX_DEPLOYMENT_RUNBOOK.md](LINUX_DEPLOYMENT_RUNBOOK.md) §14 and
+  [LOCAL_ADJUDICATOR.md](LOCAL_ADJUDICATOR.md).
 - The 5080 box can become a second worker for the Linux API (set
   `AEROCHORUS_API_BIND=<LAN IP>` on Linux and `api_url` on Windows). It
   keeps the `jesseepc` artifact store for any new results it produces.
