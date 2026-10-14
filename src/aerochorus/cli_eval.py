@@ -155,6 +155,71 @@ def cmd_eval_segments(args: argparse.Namespace) -> int:
     return 0
 
 
+def print_adjudication_report(report) -> None:
+    gate = report.gate
+    print(
+        f"gate: accept when >= {gate['min_families']} ASR families agree "
+        f"(similarity >= {gate['min_similarity']}, confidence >= {gate['min_confidence']})"
+        f"{'; split=' + report.split if report.split else ''}"
+        f"{'; english-only' if report.english_only else ''}"
+    )
+    rows = []
+    for b in report.batches:
+        best = b.baseline.get("best_single") or {}
+        rows.append(
+            {
+                "batch": b.batch_id,
+                "model": b.model,
+                "scored": b.scored,
+                "failed": b.failed,
+                "TER": _fmt(b.token_error_rate),
+                "TER canon": _fmt(b.token_error_rate_canonical),
+                "exact": _fmt(b.exact_match_rate),
+                "callsign": _fmt(b.entities["callsign"].recall),
+                "ECE": _fmt(b.expected_calibration_error),
+                "brier": _fmt(b.brier_score),
+                "accept": _fmt(b.gate["accept_rate"]),
+                "TER acc": _fmt(b.gate["token_error_rate_accepted"]),
+                "TER esc": _fmt(b.gate["token_error_rate_escalated"]),
+                "best ASR": f"{best.get('model')} {_fmt(best.get('token_error_rate_canonical'))}"
+                if best
+                else "",
+                "ensemble": _fmt(b.baseline["representative_token_error_rate_canonical"]),
+                "p50 ms": "" if b.latency_ms_p50 is None else f"{b.latency_ms_p50:.0f}",
+            }
+        )
+    print(_table(rows, list(rows[0]) if rows else ["batch"]))
+    for b in report.batches:
+        bins = [
+            {
+                "confidence": c.confidence_range,
+                "items": c.items,
+                "mean conf": _fmt(c.mean_confidence),
+                "exact": _fmt(c.exact_match_rate),
+            }
+            for c in b.calibration
+        ]
+        if bins:
+            print(f"\ncalibration, batch {b.batch_id} ({b.model}):")
+            print(_table(bins, ["confidence", "items", "mean conf", "exact"]))
+    for note in report.notes:
+        print(f"note: {note}")
+
+
+def cmd_eval_adjudication(args: argparse.Namespace) -> int:
+    from aerochorus.cli_adjudicate import gate_params
+
+    with _eval_client(args) as client:
+        report = client.evaluate_adjudications(
+            args.batch, split=args.split, english_only=args.english_only, **gate_params(args)
+        )
+    if args.json:
+        _emit(args, report)
+        return 0
+    print_adjudication_report(report)
+    return 0
+
+
 def cmd_results_reflag(args: argparse.Namespace) -> int:
     with _eval_client(args) as client:
         _emit(args, client.reflag())
@@ -194,6 +259,18 @@ def register(groups: argparse._SubParsersAction, api_opt) -> None:
     p.add_argument("--json", action="store_true")
     api_opt(p)
     p.set_defaults(func=cmd_eval_segments)
+    p = ev.add_parser(
+        "adjudication", help="score adjudication batches against gold, side by side (ADR-025)"
+    )
+    p.add_argument("--batch", type=int, action="append", required=True)
+    p.add_argument("--split", choices=["calibration", "test"])
+    p.add_argument("--english-only", action="store_true")
+    p.add_argument("--json", action="store_true")
+    from aerochorus.cli_adjudicate import gate_args
+
+    gate_args(p)
+    api_opt(p)
+    p.set_defaults(func=cmd_eval_adjudication)
 
     results = groups.add_parser("results", help="transcription results").add_subparsers(
         dest="cmd", required=True

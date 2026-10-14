@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from aerochorus.adjudication_contracts import (
     AdjudicationAccept,
@@ -16,6 +16,8 @@ from aerochorus.adjudication_contracts import (
     AdjudicationResultPost,
     AdjudicationStatus,
     ClaimedAdjudication,
+    GateConfig,
+    GateReport,
 )
 from aerochorus.api import adjudication as svc
 from aerochorus.api.deps import SessionDep
@@ -72,6 +74,25 @@ def list_batches(session: SessionDep) -> list[AdjudicationBatchView]:
 @router.get("/adjudications/{batch_id}", response_model=AdjudicationBatchDetail)
 def batch_detail(batch_id: int, session: SessionDep) -> AdjudicationBatchDetail:
     return _call(session, lambda: svc.batch_detail(session, batch_id), commit=False)
+
+
+@router.get("/adjudications/{batch_id}/gate", response_model=GateReport)
+def gate(
+    batch_id: int,
+    session: SessionDep,
+    min_families: int = Query(2, ge=1),
+    min_confidence: float = Query(0.0, ge=0, le=1),
+    min_similarity: float = Query(1.0, gt=0, le=1),
+    include_research_only: bool = False,
+) -> GateReport:
+    """Accept (enough ASR families agree) or escalate each item. Changes nothing."""
+    config = GateConfig(
+        min_families=min_families,
+        min_confidence=min_confidence,
+        min_similarity=min_similarity,
+        include_research_only=include_research_only,
+    )
+    return _call(session, lambda: svc.gate_report(session, batch_id, config), commit=False)
 
 
 @router.post("/adjudications/{batch_id}/cancel", response_model=AdjudicationBatchView)

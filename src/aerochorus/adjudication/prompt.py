@@ -256,6 +256,15 @@ def parse_result(content: str) -> dict[str, Any]:
     missing = [k for k in RESULT_SCHEMA["required"] if k not in data]
     if missing:
         raise ValueError(f"model answer lacks {', '.join(missing)}")
+    if not isinstance(data["speech_present"], bool):
+        raise ValueError("speech_present is not true or false")
+    if data["transcript"] is not None and not isinstance(data["transcript"], str):
+        raise ValueError("transcript is not a string")
+    for key in ("uncertain_words", "callsigns"):
+        if data[key] is not None and not isinstance(data[key], list):
+            raise ValueError(f"{key} is not a list")
+    if isinstance(data["confidence"], bool):
+        raise ValueError("confidence is not a number")
     transcript = " ".join(str(data["transcript"] or "").split())
     try:
         confidence = float(data["confidence"])

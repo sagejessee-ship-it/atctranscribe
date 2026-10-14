@@ -11,17 +11,15 @@ from typing import Any
 
 import httpx
 
+from aerochorus.adjudication.errors import BackendError, BackendFatal
 from aerochorus.adjudication_contracts import Pricing
 
 
-class OpenRouterError(RuntimeError):
-    def __init__(self, message: str, *, status: int | None = None, retryable: bool = False):
-        super().__init__(message)
-        self.status = status
-        self.retryable = retryable
+class OpenRouterError(BackendError):
+    pass
 
 
-class OpenRouterFatal(OpenRouterError):
+class OpenRouterFatal(BackendFatal, OpenRouterError):
     """Stop the runner: the key is rejected or the account has no credit."""
 
 

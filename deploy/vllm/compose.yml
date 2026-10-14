@@ -1,0 +1,79 @@
+# Self-hosted adjudicator model servers (ADR-025): one vLLM service per profile in
+# config/adjudicators.toml. Start the one you want (by its compose profile):
+#
+#   docker compose -f deploy/vllm/compose.yml --profile local-small up -d
+#
+# then run `aerochorus adjudicate run --profile local-small` on the host with the audio,
+# pointing AEROCHORUS_ADJUDICATOR_URL at this server if it is another machine. The same
+# file serves the RTX 5080 (Docker Desktop, WSL2 GPU) and a Linux H100 host (NVIDIA
+# container toolkit). Nothing here names a host or a GPU: set them in the environment
+# or in deploy/vllm/.env (see .env.example).
+#
+# Every service runs serve.py, which reads the profile's [profiles.<name>.vllm] table and
+# starts `vllm serve` with --served-model-name set to the profile's model id.
+name: aerochorus-vllm
+
+x-vllm: &vllm
+  # The pinned vLLM image plus its audio extra (Dockerfile); built here on first `up`.
+  image: aerochorus-vllm:${VLLM_VERSION:-v0.31.0}
+  build:
+    context: .
+    args:
+      VLLM_VERSION: ${VLLM_VERSION:-v0.31.0}
+  entrypoint: ["python3", "/deploy/serve.py"]
+  ipc: host  # shared memory for tensor parallelism (vLLM's recommendation)
+  environment:
+    HF_TOKEN: ${HF_TOKEN:-}  # gated or rate-limited downloads
+    VLLM_API_KEY: ${AEROCHORUS_ADJUDICATOR_API_KEY:-}  # empty: no key required
+    AEROCHORUS_ADJUDICATOR_PROFILES: /config/adjudicators.toml
+    CUDA_VISIBLE_DEVICES: ${VLLM_GPUS:-0}  # e.g. 0,1 for a two-GPU profile
+    AEROCHORUS_VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}  # one-off flags (not VLLM_*: vLLM warns)
+  volumes:
+    - ${AEROCHORUS_ADJUDICATOR_PROFILES_FILE:-../../config/adjudicators.toml}:/config/adjudicators.toml:ro
+    - ./serve.py:/deploy/serve.py:ro
+    - ${VLLM_CACHE:-vllm-cache}:/root/.cache/huggingface  # model weights, kept across runs
+  ports:
+    - "${VLLM_BIND:-127.0.0.1}:${VLLM_PORT:-8100}:8000"
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  healthcheck:
+    test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 30m  # the first start downloads the weights
+  restart: unless-stopped
+
+services:
+  vllm-local-small:
+    <<: *vllm
+    profiles: ["local-small"]
+    command: ["local-small"]
+
+  vllm-local-small-fp8:
+    <<: *vllm
+    profiles: ["local-small-fp8"]
+    command: ["local-small-fp8"]
+
+  vllm-h100-large:
+    <<: *vllm
+    profiles: ["h100-large"]
+    command: ["h100-large"]  # two GPUs: VLLM_GPUS=0,1
+
+  vllm-h100-large-fp8:
+    <<: *vllm
+    profiles: ["h100-large-fp8"]
+    command: ["h100-large-fp8"]
+
+  vllm-h100-voxtral:
+    <<: *vllm
+    profiles: ["h100-voxtral"]
+    command: ["h100-voxtral"]
+
+volumes:
+  vllm-cache:

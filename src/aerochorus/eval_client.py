@@ -9,6 +9,7 @@ from __future__ import annotations
 from pydantic import TypeAdapter
 
 from aerochorus.eval_contracts import (
+    AdjudicationEvalReport,
     EvalReport,
     EvalSegmentRow,
     GoldReferenceIn,
@@ -61,3 +62,17 @@ class EvalClient(ApiClient):
 
     def reflag(self) -> ReflagResult:
         return ReflagResult.model_validate(self._request("POST", "/api/v1/results/reflag"))
+
+    def evaluate_adjudications(
+        self,
+        batch_ids: list[int],
+        *,
+        split: str | None = None,
+        english_only: bool = False,
+        **gate: float | int | bool,
+    ) -> AdjudicationEvalReport:
+        params: dict = {"batch": batch_ids, "english_only": english_only, **gate}
+        if split:
+            params["split"] = split
+        data = self._request("GET", "/api/v1/evaluation/adjudications", params=params)
+        return AdjudicationEvalReport.model_validate(data)

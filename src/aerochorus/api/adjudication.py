@@ -16,6 +16,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from aerochorus.adjudication.gate import Vote, decide
 from aerochorus.adjudication.openrouter import fetch_pricing
 from aerochorus.adjudication.prompt import (
     PROMPT_VERSION,
@@ -25,6 +26,7 @@ from aerochorus.adjudication.prompt import (
     render_context,
 )
 from aerochorus.adjudication_contracts import (
+    LOCAL_MODEL_PREFIX,
     AdjudicationAccept,
     AdjudicationAcceptOutcome,
     AdjudicationBatchDetail,
@@ -39,9 +41,13 @@ from aerochorus.adjudication_contracts import (
     AdjudicationSelection,
     BatchStatus,
     ClaimedAdjudication,
+    GateConfig,
+    GateItem,
+    GateReport,
     ItemStatus,
     Pricing,
     RunnerSeen,
+    is_local_model,
 )
 from aerochorus.api import context as context_svc
 from aerochorus.api.review import (
@@ -60,8 +66,10 @@ from aerochorus.db.models import (
     AdjudicationItem,
     AnnotationVersion,
     CorpusSource,
+    Model,
     ReviewSample,
     Segment,
+    SweepRunModel,
     TranscriptionResult,
 )
 from aerochorus.review_contracts import ReviewStatus, SourceRole, TextOrigin, TrainingLabel
@@ -117,6 +125,19 @@ class PricingBook:
         return pricing
 
 
+def pricing_for(pricing_book: PricingBook, model: str) -> Pricing:
+    """A self-hosted model (ADR-025) costs nothing per request; others are looked up."""
+    if is_local_model(model):
+        return Pricing(
+            model=model,
+            source="self-hosted model (no per-request cost)",
+            prompt=0.0,
+            completion=0.0,
+            audio=0.0,
+        )
+    return pricing_book.get(model)
+
+
 class RunnerRegistry:
     """Runners seen polling for work (in memory: they poll every few seconds)."""
 
@@ -138,6 +159,12 @@ class RunnerRegistry:
 
 
 # --- planning ---------------------------------------------------------------------------------
+
+
+def _max_items(settings: ControlPlaneSettings, model: str) -> int:
+    if is_local_model(model):
+        return settings.adjudication_max_items_local
+    return settings.adjudication_max_items
 
 
 def _selected_ids(session: Session, selection: AdjudicationSelection) -> list[int]:
@@ -244,7 +271,7 @@ def preview(
 ) -> AdjudicationPreview:
     now = now or datetime.now(UTC)
     model = body.params.model or settings.adjudication_model
-    pricing = pricing_book.get(model)
+    pricing = pricing_for(pricing_book, model)
     params = body.params.model_dump() | {"model": model}
     eligible, skipped, selected = _plan(session, body.selection, params, model, pricing, settings)
     typical = sum(e["typical"] for e in eligible)
@@ -264,7 +291,7 @@ def preview(
         ),
         pricing=pricing,
         limits={
-            "max_items": settings.adjudication_max_items,
+            "max_items": _max_items(settings, model),
             "max_batch_usd": settings.adjudication_max_batch_usd,
             "max_audio_s": settings.adjudication_max_audio_s,
         },
@@ -279,26 +306,30 @@ def create(
     settings: ControlPlaneSettings,
     pricing_book: PricingBook,
 ) -> AdjudicationBatchView:
+    model = body.params.model or settings.adjudication_model
     if not body.confirm:
         raise Invalid(
-            "confirm must be true: adjudication sends audio and transcripts to an external "
-            "paid service (OpenRouter)"
+            "confirm must be true: adjudication sends audio and transcripts to "
+            + (
+                "the self-hosted model server"
+                if is_local_model(model)
+                else "an external paid service (OpenRouter)"
+            )
         )
     if body.max_cost_usd > settings.adjudication_max_batch_usd:
         raise Invalid(
             f"cost cap ${body.max_cost_usd:.2f} exceeds the per-batch limit "
             f"${settings.adjudication_max_batch_usd:.2f} (AEROCHORUS_ADJUDICATION_MAX_BATCH_USD)"
         )
-    model = body.params.model or settings.adjudication_model
-    pricing = pricing_book.get(model)
+    pricing = pricing_for(pricing_book, model)
     params = body.params.model_dump() | {"model": model}
     eligible, skipped, selected = _plan(session, body.selection, params, model, pricing, settings)
     if not eligible:
         raise Invalid(f"nothing to adjudicate: {skipped or 'empty selection'}")
-    if len(eligible) > settings.adjudication_max_items:
+    max_items = _max_items(settings, model)
+    if len(eligible) > max_items:
         raise Invalid(
-            f"{len(eligible)} items exceed the per-batch limit of "
-            f"{settings.adjudication_max_items}; select fewer"
+            f"{len(eligible)} items exceed the per-batch limit of {max_items}; select fewer"
         )
     estimate = round(sum(e["typical"] for e in eligible), 4)
     if abs(estimate - body.acknowledged_cost_usd) > max(0.01, 0.05 * body.acknowledged_cost_usd):
@@ -643,6 +674,10 @@ def claim(
         )
         if blocked:
             query = query.where(AdjudicationItem.batch_id.not_in(blocked))
+        if body.models is not None:  # a runner for these models only (a self-hosted profile)
+            query = query.where(AdjudicationBatch.model.in_(body.models))
+        else:  # an OpenRouter runner: never send a local model's items there
+            query = query.where(AdjudicationBatch.model.not_like(f"{LOCAL_MODEL_PREFIX}%"))
         item = session.scalar(query)
         if item is None:
             break
@@ -762,6 +797,91 @@ def post_result(
     _finish_if_drained(session, batch, now)
     session.flush()
     return item_view(item, batch)
+
+
+# --- the agreement gate (ADR-025) ---------------------------------------------------------------
+
+
+def votes_by_segment(session: Session, segment_ids: list[int]) -> dict[int, list[Vote]]:
+    """Each segment's current hypotheses (the newest result per model), as gate votes."""
+    rows = session.execute(
+        select(
+            TranscriptionResult.segment_id,
+            Model.id,
+            Model.logical_name,
+            Model.architecture_family,
+            Model.ensemble_eligible,
+            TranscriptionResult.status,
+            TranscriptionResult.text,
+        )
+        .join(SweepRunModel, SweepRunModel.id == TranscriptionResult.sweep_run_model_id)
+        .join(Model, Model.id == SweepRunModel.model_id)
+        .where(TranscriptionResult.segment_id.in_(segment_ids))
+        .order_by(TranscriptionResult.segment_id, Model.id, TranscriptionResult.created_at.desc())
+    ).all()
+    votes: dict[int, list[Vote]] = {}
+    seen: set[tuple[int, int]] = set()
+    for segment_id, model_id, name, family, eligible, status, text in rows:
+        if (segment_id, model_id) in seen:  # superseded by a newer result of the same model
+            continue
+        seen.add((segment_id, model_id))
+        votes.setdefault(segment_id, []).append(
+            Vote(family, text, str(status), bool(eligible), name)
+        )
+    return votes
+
+
+def gate_item(item: AdjudicationItem, votes: list[Vote], config: GateConfig) -> GateItem:
+    if item.status in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+        decision, reason, agreeing, voting = "pending", "not_finished", (), 0
+    elif item.status != ItemStatus.DONE:
+        decision, reason, agreeing, voting = "escalate", f"not_adjudicated_{item.status}", (), 0
+    else:
+        d = decide(item.transcript, item.speech_present, item.confidence, votes, config)
+        decision = "accept" if d.accept else "escalate"
+        reason, agreeing, voting = d.reason, d.agreeing_families, d.voting_families
+    return GateItem(
+        item_id=item.id,
+        segment_id=item.segment_id,
+        status=item.status,
+        decision=decision,
+        reason=reason,
+        transcript=item.transcript,
+        confidence=item.confidence,
+        agreeing_families=list(agreeing),
+        voting_families=voting,
+    )
+
+
+def gate_report(session: Session, batch_id: int, config: GateConfig) -> GateReport:
+    """Which items the ensemble corroborates (accept) and which need a second opinion."""
+    batch = session.get(AdjudicationBatch, batch_id)
+    if batch is None:
+        raise NotFound(f"unknown adjudication batch: {batch_id}")
+    items = list(
+        session.scalars(
+            select(AdjudicationItem)
+            .where(AdjudicationItem.batch_id == batch_id)
+            .order_by(AdjudicationItem.id)
+        )
+    )
+    votes = votes_by_segment(session, [i.segment_id for i in items])
+    gated = [gate_item(i, votes.get(i.segment_id, []), config) for i in items]
+    counts: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for g in gated:
+        counts[g.decision] = counts.get(g.decision, 0) + 1
+        reasons[g.reason] = reasons.get(g.reason, 0) + 1
+    decided = counts.get("accept", 0) + counts.get("escalate", 0)
+    return GateReport(
+        batch_id=batch.id,
+        model=batch.model,
+        gate=config,
+        counts=counts,
+        reasons=reasons,
+        accept_rate=round(counts.get("accept", 0) / decided, 4) if decided else None,
+        items=gated,
+    )
 
 
 # --- accepting as silver ------------------------------------------------------------------------

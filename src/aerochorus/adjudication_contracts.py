@@ -20,9 +20,17 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aerochorus.review_contracts import ReviewFilters
+
+# Self-hosted adjudicators (ADR-025) record batches under "local/<name>": no per-request
+# cost, and only a runner configured for that exact model claims their items.
+LOCAL_MODEL_PREFIX = "local/"
+
+
+def is_local_model(model: str) -> bool:
+    return model.startswith(LOCAL_MODEL_PREFIX)
 
 
 class BatchStatus(StrEnum):
@@ -192,6 +200,9 @@ class AdjudicationContext(BaseModel):
 class AdjudicationClaimRequest(BaseModel):
     runner: str
     limit: int = Field(default=1, ge=1, le=8)
+    # Only items of batches for these models. None: any hosted model, never a local one
+    # (an OpenRouter runner must not send "local/..." items to OpenRouter).
+    models: list[str] | None = None
 
 
 class ClaimedAdjudication(BaseModel):
@@ -220,6 +231,41 @@ class AdjudicationResultPost(BaseModel):
     cost_usd: float | None = Field(default=None, ge=0)
     error: str | None = None
     retryable: bool = False  # failed but worth another attempt (rate limit, outage)
+
+
+class GateConfig(BaseModel):
+    """Accept an adjudicated transcript without a paid second opinion when enough
+    independent ASR families say the same thing (``aerochorus.adjudication.gate``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_families: int = Field(default=2, ge=1)
+    min_confidence: float = Field(default=0.0, ge=0, le=1)
+    # 1.0: identical after normalisation. Lower: order-aware similarity at least this.
+    min_similarity: float = Field(default=1.0, gt=0, le=1)
+    include_research_only: bool = False  # research-only models never vote by default
+
+
+class GateItem(BaseModel):
+    item_id: int
+    segment_id: int
+    status: ItemStatus
+    decision: Literal["accept", "escalate", "pending"]
+    reason: str
+    transcript: str | None
+    confidence: float | None
+    agreeing_families: list[str]
+    voting_families: int
+
+
+class GateReport(BaseModel):
+    batch_id: int
+    model: str
+    gate: GateConfig
+    counts: dict[str, int]  # by decision
+    reasons: dict[str, int]
+    accept_rate: float | None  # of decided items
+    items: list[GateItem]
 
 
 # --- accepting results as silver ----------------------------------------------------------------

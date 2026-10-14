@@ -1,6 +1,7 @@
 """Evaluation against gold references (Phase 4, ADR-015).
 
-This is the only control-plane module that reads the ``reference`` schema.
+This is the only control-plane module that reads the ``reference`` schema. It
+scores sweeps (Phase 4) and adjudication batches (ADR-025).
 
 Scoring rules:
 * one symmetric normalizer (``normalize_for_scoring``) for gold and hypothesis;
@@ -21,22 +22,30 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from aerochorus.adjudication_contracts import GateConfig, ItemStatus
 from aerochorus.api.sweeps import Conflict, NotFound, load_run
 from aerochorus.atc.align import contains_run, edit_counts, sequence_similarity
 from aerochorus.atc.entities import ENTITY_CLASSES, gold_entity_spans
 from aerochorus.atc.normalize import evidence_tokens, normalize_for_scoring
 from aerochorus.atc.quality import compute_flags
 from aerochorus.db.models import (
+    AdjudicationBatch,
+    AdjudicationItem,
     CorpusSource,
     GoldSegment,
+    Model,
     Segment,
+    SegmentAgreement,
     SweepRun,
     SweepRunModel,
     SweepRunSegment,
     TranscriptionResult,
 )
 from aerochorus.eval_contracts import (
+    AdjudicationEvalBatch,
+    AdjudicationEvalReport,
     AgreementBin,
+    CalibrationBin,
     EntityScore,
     EvalModelMetrics,
     EvalReport,
@@ -394,3 +403,235 @@ def evaluation_segments(
 
     rows.sort(key=key, reverse=True)
     return rows[offset : offset + limit]
+
+
+# --- adjudicator evaluation (ADR-025) -----------------------------------------------------------
+
+CONFIDENCE_BINS = ((0.0, 0.5), (0.5, 0.7), (0.7, 0.9), (0.9, 1.01))
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
+
+
+def _calibration(
+    pairs: list[tuple[float, int]],
+) -> tuple[list[CalibrationBin], float | None, float | None]:
+    """Bins of stated confidence against exact match, expected calibration error, Brier."""
+    if not pairs:
+        return [], None, None
+    bins, gap = [], 0.0
+    for low, high in CONFIDENCE_BINS:
+        inside = [(c, e) for c, e in pairs if low <= c < high]
+        hits = sum(e for _, e in inside)
+        stated = sum(c for c, _ in inside)
+        gap += abs(hits - stated)
+        bins.append(
+            CalibrationBin(
+                confidence_range=f"{low:.1f}-{min(high, 1.0):.1f}",
+                items=len(inside),
+                mean_confidence=round(stated / len(inside), 4) if inside else None,
+                exact_match_rate=_rate(hits, len(inside)),
+            )
+        )
+    brier = sum((c - e) ** 2 for c, e in pairs) / len(pairs)
+    return bins, round(gap / len(pairs), 4), round(brier, 4)
+
+
+def _contaminated_models(session: Session, dataset: str | None) -> set[str]:
+    if not dataset:
+        return set()
+    out = set()
+    for name, pedigree in session.execute(select(Model.logical_name, Model.pedigree)):
+        benchmarks = (pedigree or {}).get("contaminated_benchmarks") or []
+        if any(str(b).lower() in dataset.lower() for b in benchmarks):
+            out.add(name)
+    return out
+
+
+def _score_batch(
+    session: Session,
+    batch: AdjudicationBatch,
+    gate: GateConfig,
+    split: str | None,
+    english_only: bool,
+) -> AdjudicationEvalBatch:
+    from aerochorus.api.adjudication import gate_item, votes_by_segment
+
+    rows = session.execute(
+        select(AdjudicationItem, GoldSegment)
+        .join(Segment, Segment.id == AdjudicationItem.segment_id)
+        .outerjoin(
+            GoldSegment,
+            (GoldSegment.source_id == Segment.source_id)
+            & (GoldSegment.relative_path == Segment.relative_path),
+        )
+        .where(AdjudicationItem.batch_id == batch.id)
+        .order_by(AdjudicationItem.id)
+    ).all()
+    segment_ids = [item.segment_id for item, _ in rows]
+    votes = votes_by_segment(session, segment_ids)
+    representative = dict(
+        session.execute(
+            select(SegmentAgreement.segment_id, SegmentAgreement.representative_text).where(
+                SegmentAgreement.segment_id.in_(segment_ids)
+            )
+        ).all()
+    )
+    totals: Counter = Counter()
+    by_decision: dict[str, Counter] = defaultdict(Counter)
+    per_model: dict[str, Counter] = defaultdict(Counter)
+    entities = {c: Counter() for c in ENTITY_CLASSES}
+    pairs: list[tuple[float, int]] = []  # (stated confidence, exact match)
+    latencies: list[float] = []
+    dataset = None
+    for item, gold in rows:
+        if gold is None:
+            totals["without_gold"] += 1
+            continue
+        if (english_only and gold.non_english) or (split and gold.split != split):
+            continue
+        if item.status in (ItemStatus.QUEUED, ItemStatus.RUNNING):
+            totals["pending"] += 1
+            continue
+        dataset = dataset or gold.dataset
+        done = item.status == ItemStatus.DONE
+        answer = (item.transcript or "") if done else ""  # failed: an empty answer
+        totals["scored"] += 1
+        totals["failed"] += not done
+        ref_raw = normalize_for_scoring(gold.text_raw).split()
+        totals["tokens_raw"] += len(ref_raw)
+        totals["errors_raw"] += edit_counts(ref_raw, normalize_for_scoring(answer).split()).errors
+        ref = normalize_for_scoring(gold.text_raw, canonical_numbers=True).split()
+        hyp = normalize_for_scoring(answer, canonical_numbers=True).split()
+        errors = edit_counts(ref, hyp).errors
+        exact = int(ref == hyp)
+        totals["tokens"] += len(ref)
+        totals["errors"] += errors
+        totals["exact"] += exact
+        for span in gold_entity_spans(gold.text_raw, canonical_numbers=True):
+            entities[span.entity_class]["spans"] += 1
+            entities[span.entity_class]["recovered"] += contains_run(hyp, span.tokens)
+        if done and item.confidence is not None:
+            pairs.append((float(item.confidence), exact))
+        latency = (item.usage or {}).get("latency_ms")
+        if done and isinstance(latency, int | float):
+            latencies.append(float(latency))
+        decision = gate_item(item, votes.get(item.segment_id, []), gate).decision
+        bucket = by_decision[decision]
+        bucket["items"] += 1
+        bucket["errors"] += errors
+        bucket["tokens"] += len(ref)
+        bucket["exact"] += exact
+        for vote in votes.get(item.segment_id, []):
+            text = vote.text if vote.status == ResultStatus.SUCCESS else ""
+            words = normalize_for_scoring(text, canonical_numbers=True).split()
+            per_model[vote.model]["errors"] += edit_counts(ref, words).errors
+            per_model[vote.model]["tokens"] += len(ref)
+            per_model[vote.model]["segments"] += 1
+        rep = representative.get(item.segment_id)
+        rep_words = normalize_for_scoring(rep, canonical_numbers=True).split()
+        totals["rep_errors"] += edit_counts(ref, rep_words).errors
+
+    calibration, ece, brier = _calibration(pairs)
+    accepted, escalated = by_decision["accept"], by_decision["escalate"]
+    decided = accepted["items"] + escalated["items"]
+    contaminated = _contaminated_models(session, dataset)
+    fair = {
+        m: c
+        for m, c in per_model.items()
+        if m not in contaminated and c["segments"] == totals["scored"]
+    }
+    best = min(fair, key=lambda m: (fair[m]["errors"], m)) if fair else None
+    return AdjudicationEvalBatch(
+        batch_id=batch.id,
+        model=batch.model,
+        prompt_version=batch.prompt_version,
+        items=len(rows),
+        scored=totals["scored"],
+        failed=totals["failed"],
+        pending=totals["pending"],
+        without_gold=totals["without_gold"],
+        reference_tokens=totals["tokens"],
+        token_error_rate=_rate(totals["errors_raw"], totals["tokens_raw"]),
+        token_error_rate_canonical=_rate(totals["errors"], totals["tokens"]),
+        exact_match_rate=_rate(totals["exact"], totals["scored"]),
+        entities={
+            cls: EntityScore(
+                spans=c["spans"], recovered=c["recovered"], recall=_rate(c["recovered"], c["spans"])
+            )
+            for cls, c in entities.items()
+        },
+        calibration=calibration,
+        expected_calibration_error=ece,
+        brier_score=brier,
+        gate={
+            "accepted": accepted["items"],
+            "escalated": escalated["items"],
+            "accept_rate": _rate(accepted["items"], decided),
+            "escalate_rate": _rate(escalated["items"], decided),
+            "token_error_rate_accepted": _rate(accepted["errors"], accepted["tokens"]),
+            "token_error_rate_escalated": _rate(escalated["errors"], escalated["tokens"]),
+            "exact_match_rate_accepted": _rate(accepted["exact"], accepted["items"]),
+            "exact_match_rate_escalated": _rate(escalated["exact"], escalated["items"]),
+        },
+        baseline={
+            "best_single": {
+                "model": best,
+                "token_error_rate_canonical": _rate(fair[best]["errors"], fair[best]["tokens"]),
+            }
+            if best
+            else None,
+            "representative_token_error_rate_canonical": _rate(
+                totals["rep_errors"], totals["tokens"]
+            ),
+            "models": {m: _rate(c["errors"], c["tokens"]) for m, c in sorted(per_model.items())},
+            "contaminated": sorted(contaminated & set(per_model)),
+        },
+        latency_ms_p50=_percentile(latencies, 0.5),
+        latency_ms_p95=_percentile(latencies, 0.95),
+    )
+
+
+def evaluate_adjudications(
+    session: Session,
+    batch_ids: list[int],
+    *,
+    gate: GateConfig,
+    split: str | None = None,
+    english_only: bool = False,
+) -> AdjudicationEvalReport:
+    """Adjudicated transcripts against gold, side by side per batch (one batch per profile).
+
+    Same symmetric normaliser as the sweep report; failed items score as empty answers.
+    Calibration compares stated confidence with exact match (canonical numbers). The gate
+    is the one ``adjudicate gate`` applies, and the baseline is every ASR model on the same
+    segments, so the adjudicator is judged against what it was given.
+    """
+    if not batch_ids:
+        raise Conflict("name at least one adjudication batch")
+    reports = []
+    for batch_id in batch_ids:
+        batch = session.get(AdjudicationBatch, batch_id)
+        if batch is None:
+            raise NotFound(f"unknown adjudication batch: {batch_id}")
+        reports.append(_score_batch(session, batch, gate, split, english_only))
+    return AdjudicationEvalReport(
+        gate=gate.model_dump(),
+        split=split,
+        english_only=english_only,
+        batches=reports,
+        notes=[
+            "Token error rates: normalize_for_scoring on gold and answers alike; 'canonical' "
+            "also folds number format (niner/nine, digits/words), matching the adjudication "
+            "convention of numbers in words.",
+            "Failed items score as empty answers (all deletions); pending items are not scored.",
+            "Calibration: stated confidence against exact match (canonical). ECE over the bins "
+            "shown; Brier over every scored item with a confidence.",
+            "Baseline: each ASR model's current hypothesis on the same segments. Best single "
+            "excludes models trained on this benchmark and models missing segments.",
+        ],
+    )

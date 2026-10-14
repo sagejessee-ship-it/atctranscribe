@@ -12,9 +12,11 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from test_review import HYPOTHESES, save, seeded  # noqa: F401  (fixture)
 
+from aerochorus.adjudication.backends import OpenRouterBackend, backend_for
 from aerochorus.adjudication.openrouter import OpenRouterClient
+from aerochorus.adjudication.profiles import AdjudicatorProfile
 from aerochorus.adjudication_contracts import Pricing
-from aerochorus.db.models import AnnotationVersion, Segment
+from aerochorus.db.models import AnnotationVersion, GoldSegment, Segment
 from aerochorus.worker.adjudicator import Adjudicator
 from aerochorus.worker.fs import ReadOnlyCorpusReader
 
@@ -88,7 +90,8 @@ def fake_openrouter(requests: list[dict], status: int = 200) -> OpenRouterClient
 
 def runner(api, audio_roots, client) -> Adjudicator:
     readers = {key: ReadOnlyCorpusReader(root) for key, root in audio_roots.items()}
-    return Adjudicator(api, readers, client, "test/adjudicator", sleep=lambda s: None,
+    return Adjudicator(api, readers, OpenRouterBackend(client), "test/adjudicator",
+                       sleep=lambda s: None,
                        log=lambda m: None)  # fmt: skip
 
 
@@ -230,6 +233,125 @@ def test_changed_audio_is_refused_and_a_rejected_key_stops_the_runner(
     assert "sk-test" not in summary.stopped
     (item,) = http.get(f"/api/v1/segments/{s2}/adjudications").json()
     assert item["status"] == "queued" and item["attempts"] == 1  # back in line, nothing spent
+
+
+def fake_vllm(requests: list[dict], model: str = "local/voxtral-test"):
+    """A self-hosted model server (ADR-025) that thinks out loud before its JSON."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": model}]})
+        payload = json.loads(request.content)
+        requests.append(payload)
+        context = payload["messages"][-1]["content"][-1]["text"].split("Nearby transmissions")[0]
+        transcript, confidence = next(
+            (answer for phrase, answer in ANSWERS.items() if phrase in context), ("", 0.8)
+        )
+        answer = {"speech_present": bool(transcript), "transcript": transcript,
+                  "confidence": confidence, "uncertain_words": [], "callsigns": [],
+                  "closest_hypothesis": "", "notes": ""}  # fmt: skip
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "<think>listening</think>" + json.dumps(answer)}}],
+            "usage": {"prompt_tokens": 700, "completion_tokens": 90},
+        })  # fmt: skip
+
+    profile = AdjudicatorProfile(name="test-local", model=model, url="http://vllm.test/v1")
+    return backend_for(profile, http=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_local_batches_are_free_and_claimed_only_by_their_own_runner(
+    http,
+    api,
+    seeded,  # noqa: F811
+    pricing,
+    audio,
+):
+    ids = [seeded[k] for k in ("s1_consensus", "s2_disagree")]
+    plan = preview(http, ids, model="local/voxtral-test")
+    assert plan["pricing"]["source"].startswith("self-hosted")
+    assert plan["estimated_cost_usd"] == 0 and plan["worst_case_cost_usd"] == 0
+    assert plan["limits"]["max_items"] == 5000
+    local = create(http, ids, model="local/voxtral-test").json()
+    paid = create(http, [seeded["s3_near"]]).json()
+
+    def claim(body):
+        return http.post("/api/v1/adjudication-items/claim", json=body).json()
+
+    # An OpenRouter runner (no model list, old and new alike) never gets a local item.
+    (hosted,) = claim({"runner": "openrouter", "limit": 8})
+    assert hosted["batch_id"] == paid["id"]
+    assert claim({"runner": "other-gpu", "limit": 8, "models": ["local/other"]}) == []
+
+    requests: list[dict] = []
+    readers = {key: ReadOnlyCorpusReader(root) for key, root in audio.items()}
+    summary = Adjudicator(api, readers, fake_vllm(requests), "test/local-small",
+                          sleep=lambda s: None, log=lambda m: None).run(concurrency=2)  # fmt: skip
+    assert (summary.done, summary.failed) == (2, 0) and summary.spent_usd == 0
+    stats = summary.stats()
+    assert stats["completion_tokens_total"] == 180 and stats["latency_ms_p50"] is not None
+    assert {r["model"] for r in requests} == {"local/voxtral-test"}
+
+    detail = http.get(f"/api/v1/adjudications/{local['id']}").json()
+    assert detail["status"] == "done" and detail["spent_usd"] == 0
+    s1 = next(i for i in detail["items"] if i["segment_id"] == seeded["s1_consensus"])
+    assert s1["transcript"] == "delta one two three taxi via alpha"  # thinking stripped
+    assert s1["best_hypothesis_similarity"] == 1.0
+    assert s1["cost_usd"] is None and s1["usage"]["cost_source"].startswith("self-hosted")
+    assert s1["usage"]["calls"] == 1 and s1["usage"]["latency_ms"] >= 0
+
+
+def test_the_gate_and_the_gold_evaluation_of_a_local_batch(
+    http,
+    api,
+    db,
+    seeded,  # noqa: F811
+    pricing,
+    audio,
+):
+    gold = {
+        "s1_consensus": "[#callsign]delta one two three[/#callsign] taxi via alpha",
+        "s2_disagree": "american four hold short runway three three left",
+        "s3_near": "southwest four five six contact tower one one niner point four",
+    }  # s4_problems has no gold
+    for key, text in gold.items():
+        seg = db.get(Segment, seeded[key])
+        db.add(GoldSegment(source_id=seg.source_id, relative_path=seg.relative_path,
+                           dataset="test-gold", recording_id=key, source_segment_index=0,
+                           start_ms=0, end_ms=2000, text_raw=text, split="test",
+                           split_source="test"))  # fmt: skip
+    db.commit()
+    s1, s2, s3, s4 = (seeded[k] for k in ("s1_consensus", "s2_disagree", "s3_near", "s4_problems"))
+    batch = create(http, [s1, s2, s3, s4], model="local/voxtral-test").json()
+    readers = {key: ReadOnlyCorpusReader(root) for key, root in audio.items()}
+    Adjudicator(api, readers, fake_vllm([]), "test/local-small", sleep=lambda s: None,
+                log=lambda m: None).run()  # fmt: skip
+
+    gate = http.get(f"/api/v1/adjudications/{batch['id']}/gate").json()
+    items = {i["segment_id"]: i for i in gate["items"]}
+    assert items[s1]["decision"] == "accept"
+    assert items[s1]["agreeing_families"] == ["canary", "parakeet", "whisper"]
+    # Two canary models agree, but they are one family: a second opinion is needed.
+    assert items[s2]["reason"] == "too_few_families" and items[s2]["agreeing_families"] == [
+        "canary"
+    ]
+    assert items[s3]["decision"] == "accept"  # "niner" and "nine" are the same number
+    assert items[s4]["reason"] == "speech_disputed"  # "no speech", but whisper heard "roger"
+    assert gate["counts"] == {"accept": 2, "escalate": 2} and gate["accept_rate"] == 0.5
+    strict = http.get(f"/api/v1/adjudications/{batch['id']}/gate", params={"min_confidence": 0.5})
+    assert {i["segment_id"]: i["reason"] for i in strict.json()["items"]}[s3] == "low_confidence"
+
+    report = http.get("/api/v1/evaluation/adjudications", params={"batch": batch["id"]}).json()
+    (b,) = report["batches"]
+    assert (b["scored"], b["without_gold"], b["failed"], b["pending"]) == (3, 1, 0, 0)
+    assert b["token_error_rate_canonical"] == 0.0 and b["exact_match_rate"] == 1.0
+    assert b["entities"]["callsign"] == {"spans": 1, "recovered": 1, "recall": 1.0}
+    assert (b["gate"]["accepted"], b["gate"]["escalated"]) == (2, 1)
+    # Stated 0.3 on an exactly right answer: badly calibrated, and the numbers say so.
+    assert b["expected_calibration_error"] == pytest.approx(0.2833, abs=1e-3)
+    assert b["brier_score"] == pytest.approx(0.1675, abs=1e-3)
+    assert b["baseline"]["best_single"]["model"] == "canary-a"
+    assert b["baseline"]["models"]["parakeet-a"] > 0
+    assert b["latency_ms_p50"] is not None
 
 
 def test_accepting_as_silver_never_overrides_human_work(http, api, db, seeded, pricing, audio):  # noqa: F811

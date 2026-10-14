@@ -1,0 +1,146 @@
+# Self-hosted adjudicator profiles (ADR-025). One table per profile:
+#
+#   client side: how `aerochorus adjudicate run --profile <name>` talks to the model
+#   [profiles.<name>.vllm]: how deploy/vllm starts the server for it (vllm serve <model> <args>)
+#
+# Select a profile with AEROCHORUS_ADJUDICATOR_PROFILE or --profile. Per-host overrides:
+# AEROCHORUS_ADJUDICATOR_URL, _MODEL, _MAX_TOKENS, _TEMPERATURE, _TIMEOUT_S,
+# _MAX_AUDIO_INPUTS, _STRIP_THINKING. A key, if the server requires one, only ever comes
+# from AEROCHORUS_ADJUDICATOR_API_KEY (the vLLM container reads the same variable).
+#
+# `model` is what batches and results are recorded under. Self-hosted ids start with
+# "local/" (free; claimed only by a runner for that model) and are also the server's
+# --served-model-name, which deploy/vllm/serve.py adds. Changing the model changes the id:
+# results of different models never mix.
+#
+# Verified against vLLM v0.31.0 (October 2026) and the model cards; see
+# docs/deployment/LOCAL_ADJUDICATOR.md for VRAM, deployment and the swap checklist.
+
+# Accept an adjudicated transcript without a paid second opinion when this many
+# ensemble-voting ASR families say the same thing (after normalisation), else escalate.
+[gate]
+min_families = 2
+min_confidence = 0.0
+min_similarity = 1.0  # 1.0 = identical after normalisation; lower = near match
+include_research_only = false
+
+[profiles.local-small]
+description = "Voxtral Mini 3B (bf16) on one 16 GB GPU: the RTX 5080 development box"
+model = "local/voxtral-mini-3b-2507"
+url = "http://127.0.0.1:8100/v1"
+system_prompt = "user"  # Voxtral has no system role yet: instructions go in the user turn
+max_tokens = 1024       # no reasoning; the JSON answer is ~150 tokens
+temperature = 0.0
+max_audio_inputs = 5    # the whole clip + up to 4 transmissions
+timeout_s = 120
+concurrency = 4
+
+[profiles.local-small.vllm]
+model = "mistralai/Voxtral-Mini-3B-2507"
+gpus = 1
+vram_gb = 13
+args = [
+  "--tokenizer-mode", "mistral", "--config-format", "mistral", "--load-format", "mistral",
+  "--max-model-len", "8192",
+  "--limit-mm-per-prompt", '{"audio": 5}',
+  "--gpu-memory-utilization", "0.80",
+  "--max-num-seqs", "8",
+]
+
+[profiles.local-small-fp8]
+description = "Voxtral Mini 3B with FP8 weights (online): fits beside a running sweep on 16 GB"
+model = "local/voxtral-mini-3b-2507-fp8"
+url = "http://127.0.0.1:8100/v1"
+system_prompt = "user"
+max_tokens = 1024
+temperature = 0.0
+max_audio_inputs = 5
+timeout_s = 120
+concurrency = 2
+
+[profiles.local-small-fp8.vllm]
+model = "mistralai/Voxtral-Mini-3B-2507"
+gpus = 1
+vram_gb = 8
+args = [
+  "--tokenizer-mode", "mistral", "--config-format", "mistral", "--load-format", "mistral",
+  "--quantization", "fp8",
+  "--max-model-len", "8192",
+  "--limit-mm-per-prompt", '{"audio": 5}',
+  "--gpu-memory-utilization", "0.50",
+  "--max-num-seqs", "4",
+]
+
+[profiles.h100-large]
+description = "Qwen3-Omni 30B-A3B Thinking, bf16, tensor parallel over two H100s"
+model = "local/qwen3-omni-30b-a3b-thinking"
+url = "http://127.0.0.1:8100/v1"
+system_prompt = "system"
+max_tokens = 8192       # reasoning + answer; the reasoning parser keeps it out of the answer
+temperature = 0.6       # Qwen's setting for thinking models (greedy decoding can loop)
+extra_body = { top_p = 0.95, top_k = 20 }
+max_audio_inputs = 5
+timeout_s = 600
+concurrency = 8
+
+[profiles.h100-large.vllm]
+model = "Qwen/Qwen3-Omni-30B-A3B-Thinking"
+gpus = 2
+vram_gb = 60
+args = [
+  "--tensor-parallel-size", "2",
+  "--dtype", "bfloat16",
+  "--max-model-len", "32768",
+  "--limit-mm-per-prompt", '{"audio": 5, "image": 0, "video": 0}',
+  "--reasoning-parser", "qwen3",
+  "--gpu-memory-utilization", "0.90",
+  "--max-num-seqs", "16",
+]
+
+[profiles.h100-large-fp8]
+description = "Qwen3-Omni 30B-A3B Thinking, FP8 weights (online), one H100"
+model = "local/qwen3-omni-30b-a3b-thinking-fp8"
+url = "http://127.0.0.1:8100/v1"
+system_prompt = "system"
+max_tokens = 8192
+temperature = 0.6
+extra_body = { top_p = 0.95, top_k = 20 }
+max_audio_inputs = 5
+timeout_s = 600
+concurrency = 8
+
+[profiles.h100-large-fp8.vllm]
+model = "Qwen/Qwen3-Omni-30B-A3B-Thinking"
+gpus = 1
+vram_gb = 70
+args = [
+  "--quantization", "fp8",
+  "--max-model-len", "32768",
+  "--limit-mm-per-prompt", '{"audio": 5, "image": 0, "video": 0}',
+  "--reasoning-parser", "qwen3",
+  "--gpu-memory-utilization", "0.90",
+  "--max-num-seqs", "16",
+]
+
+[profiles.h100-voxtral]
+description = "Voxtral Small 24B (bf16) on one H100"
+model = "local/voxtral-small-24b-2507"
+url = "http://127.0.0.1:8100/v1"
+system_prompt = "user"
+max_tokens = 1024
+temperature = 0.0
+max_audio_inputs = 5
+timeout_s = 300
+concurrency = 8
+
+[profiles.h100-voxtral.vllm]
+model = "mistralai/Voxtral-Small-24B-2507"
+gpus = 1
+vram_gb = 65
+args = [
+  "--tokenizer-mode", "mistral", "--config-format", "mistral", "--load-format", "mistral",
+  "--max-model-len", "32768",
+  "--limit-mm-per-prompt", '{"audio": 5}',
+  "--gpu-memory-utilization", "0.90",
+  "--max-num-seqs", "16",
+]

@@ -140,10 +140,25 @@ class ApiClient:
 
     # --- adjudication (ADR-022) ---
 
-    def claim_adjudications(self, runner: str, limit: int = 1) -> list[dict[str, Any]]:
-        return self._request(
-            "POST", "/api/v1/adjudication-items/claim", json={"runner": runner, "limit": limit}
-        )
+    def claim_adjudications(
+        self, runner: str, limit: int = 1, models: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        body: dict[str, Any] = {"runner": runner, "limit": limit}
+        if models is not None:
+            body["models"] = models
+        return self._request("POST", "/api/v1/adjudication-items/claim", json=body)
+
+    def preview_adjudication(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/adjudications/preview", json=body)
+
+    def create_adjudication(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/adjudications", json=body)
+
+    def adjudication_gate(self, batch_id: int, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"/api/v1/adjudications/{batch_id}/gate", params=params)
+
+    def accept_adjudications(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/adjudication-items/accept", json=body)
 
     def post_adjudication_result(self, item_id: int, body: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/api/v1/adjudication-items/{item_id}/result", json=body)
