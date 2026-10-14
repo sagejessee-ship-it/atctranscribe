@@ -260,7 +260,7 @@ uv run aerochorus source add home_atc_archive --name "Home ATC archive (BWI)" \
 
    [transcription.crispasr]
    launcher = "docker"
-   image = "ghcr.io/crispstrobe/crispasr@sha256:bc53f7a834140c86923c7ccb5f60867ec12b978e8ef12d8d8776d8034eb0eec0"
+   image = "ghcr.io/crispstrobe/crispasr@sha256:7bf5e366e4c79a354901bc9e4cd25a998200f4d4a0a7c4c33520922120811db2"
    gpus = "all"
    host_port = 8090
    ```
@@ -269,13 +269,19 @@ uv run aerochorus source add home_atc_archive --name "Home ATC archive (BWI)" \
    R580+; this box has 610.88.
 
    ```bash
-   docker pull ghcr.io/crispstrobe/crispasr@sha256:bc53f7a834140c86923c7ccb5f60867ec12b978e8ef12d8d8776d8034eb0eec0
+   docker pull ghcr.io/crispstrobe/crispasr@sha256:7bf5e366e4c79a354901bc9e4cd25a998200f4d4a0a7c4c33520922120811db2
    ```
 
    To move to a newer CrispASR, pull the new tag, read its digest with
    `docker image inspect ghcr.io/crispstrobe/crispasr:main-cuda --format '{{.Id}}'`,
    and update `image`. Model runs already started under the old digest will
    refuse to resume on the new one (ADR-014). Finish them or start new sweeps.
+
+   The digest above is CrispASR **0.8.39** (2026-09-30). The Linux host pins
+   the same release in `deploy/linux/crispasr.lock`. It replaced 0.8.37
+   (`sha256:bc53f7a8…`): 0.8.37's omniasr CTC windowing left a tail window too
+   short for the model's convolutions, so the server aborted on every 9,072 ms
+   file. Sweeps up to 12 ran on 0.8.37; each model run records its runtime.
 
 3. Load the model catalog and download the models (§5).
 

@@ -59,5 +59,6 @@ env = { LD_LIBRARY_PATH = "/srv/aerochorus/crispasr/current:/srv/aerochorus/cuda
 # [transcription.crispasr]
 # launcher = "docker"
 # image = "ghcr.io/crispstrobe/crispasr@sha256:<digest>"   # pin; see runbook
+# CrispASR 0.8.39 (CUDA 13, RTX 50xx): sha256:7bf5e366e4c79a354901bc9e4cd25a998200f4d4a0a7c4c33520922120811db2
 # gpus = "all"
 # host_port = 8090
