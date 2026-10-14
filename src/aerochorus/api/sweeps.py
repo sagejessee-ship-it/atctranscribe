@@ -957,6 +957,10 @@ def record_result(
 
 
 def _settle_run(session: Session, run: SweepRun) -> None:
+    # Two slots can finish this sweep's last model runs at the same moment. Locking the
+    # sweep makes the second wait for the first to commit, so it sees both finished
+    # (otherwise neither marks the sweep done and it stays "running" for good).
+    session.refresh(run, with_for_update=True)
     statuses = list(
         session.scalars(select(SweepRunModel.status).where(SweepRunModel.run_id == run.id))
     )
