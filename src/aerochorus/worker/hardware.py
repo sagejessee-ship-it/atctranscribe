@@ -1,6 +1,6 @@
 """Hardware inventory and runtime profile for a worker host (ADR-021).
 
-A *hardware profile* (e.g. ``linux_pascal_8gb``) names a class of machine on
+A *hardware profile* (e.g. ``windows_blackwell_16gb``) names a class of machine on
 which model qualification is valid. It is derived from what is detected (OS,
 GPU architecture, VRAM) or set explicitly in the worker config; it is never a
 hostname. Qualification results are recorded per (model, profile).

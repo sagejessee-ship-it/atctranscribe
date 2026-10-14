@@ -106,8 +106,7 @@ def test_real_catalog_loads(api, source):
     suites = {s.name: s.models for s in api.list_suites()}
     assert suites["smoke"] == ["parakeet-tdt-0.6b-v3-q8_0"]
     assert len(suites["qualification"]) == 6
-    assert suites["smoke-linux1070"] == ["whisper-large-v3-turbo-q8_0", "parakeet-tdt-0.6b-v3-q8_0"]
-    assert len(suites["qualify-linux1070"]) == 17
+    assert not [name for name in suites if "1070" in name]  # that host was dropped
 
 
 def test_full_sweeps_require_qualified_models(api, lab):

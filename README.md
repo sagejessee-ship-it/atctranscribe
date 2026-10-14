@@ -20,27 +20,25 @@ force are in [docs/adr/](docs/adr/README.md). **Status:** Phases 0–5 are done:
 - paid model adjudication (Gemini via OpenRouter) of selected segments,
   priced, capped and confirmed (ADR-022).
 
-**Deployment:** a Linux host with a GTX 1070, containers only (ADR-021,
-ADR-023). See [docs/deployment/](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
-**Operating it:** [docs/runbook.md](docs/runbook.md).
+**Deployment:** one Windows PC with an RTX 5080 runs everything (below). A
+move to H100 hosts may follow; the GTX 1070 Linux host was dropped
+(2026-10-14). **Operating it:** [docs/runbook.md](docs/runbook.md).
 
 ```
-ALIENWARE COLLECTOR ──SMB, read-only──▶ LINUX HOST (GTX 1070 8 GB, 32 GB RAM) ◀──HTTP── LAN browsers
- SDR capture, segmentation             PostgreSQL + API (Docker)                        (Intel Mac, PCs)
- immutable source audio                review edge: web UI + audio (container)
-                                       worker + pinned CUDA 12 CrispASR (container, GPU)
-                                       models, artifacts, exports, backups (/srv/aerochorus)
+ALIENWARE COLLECTOR ──SMB, read-only──▶ WINDOWS PC (RTX 5080 16 GB) ◀──HTTP── LAN browsers
+ SDR capture, segmentation             PostgreSQL + API (Docker Compose)        (Intel Mac, PCs)
+ immutable source audio                review edge: web UI + audio (aerochorus ui serve)
+                                       worker (native) + CrispASR CUDA image (Docker, GPU)
+                                       models, artifacts, exports (%USERPROFILE%erochorus-data)
 ```
 
 - **Control plane** (Docker Compose): PostgreSQL 17 and the FastAPI service.
   It is the only writer to the database.
-- **Worker** (a container on the Linux host with the GPU passed through;
-  native Python on the Windows dev box): scans the mounted archive read-only
-  and reports observations to the API. It also runs CrispASR with one model
-  at a time: the pinned CUDA 12 binary on the Linux host, or the CUDA image
-  on the Windows 5080 box. Results go to the API; raw responses go to a local
-  `.json.zst` artifact store.
-- **Review edge** (a container on the Linux host): serves the web UI on the
+- **Worker** (native Python on the PC): scans the mounted archive read-only
+  and reports observations to the API. It also runs CrispASR, from its pinned
+  CUDA image, with up to two models resident when the GPU has room. Results
+  go to the API; raw responses go to a local `.json.zst` artifact store.
+- **Review edge** (`aerochorus ui serve` on the PC): serves the web UI on the
   LAN, proxies the API, and streams source audio read-only.
 
 ## Layout
@@ -106,21 +104,6 @@ uv run aerochorus sweep create --suite smoke --dir 2026/09/08 --limit 100 --allo
 uv run aerochorus worker transcribe
 uv run aerochorus sweep show 1 && uv run aerochorus sweep transcripts 1 --limit 5
 ```
-
-### On the Linux host
-
-Containers only: no repository, Python or Node on the host. On the Windows
-PC, `deploy\linux\package.ps1` builds the images and writes a deploy bundle.
-Copy it to the host, then run `sudo bash host-setup.sh` once, followed by
-`bash deploy.sh up`:
-
-- `host-setup.sh` checks the driver, installs Docker and the NVIDIA
-  Container Toolkit, and mounts the share read-only;
-- `deploy.sh up` loads the images, writes the config, starts everything, and
-  smoke-tests the API, UI, share, GPU and CrispASR.
-
-The full walkthrough is
-[docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md](docs/deployment/LINUX_DEPLOYMENT_RUNBOOK.md).
 
 ## Tests
 

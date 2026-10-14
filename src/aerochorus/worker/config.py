@@ -28,11 +28,11 @@ class SourceMount(BaseModel):
 
 
 class CrispAsrConfig(BaseModel):
-    """How this machine runs CrispASR (ADR-021: a pinned native binary on the Linux host)."""
+    """How this machine runs CrispASR: its pinned server image, or a pinned native binary."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # "native": spawn a pinned crispasr binary (Linux CUDA 12 on the GTX 1070 host,
+    # "native": spawn a pinned crispasr binary (a CUDA or CPU build on this machine,
     # Windows CUDA, CPU builds). Put LD_LIBRARY_PATH for the CUDA 12 runtime in `env`.
     # "docker": run the CrispASR server image (Linux/Windows hosts with NVIDIA GPUs).
     launcher: Literal["native", "docker"] = "native"
@@ -95,7 +95,7 @@ class WorkerConfig(BaseModel):
 
     worker_name: str = Field(default_factory=socket.gethostname)
     api_url: str = "http://127.0.0.1:8000"
-    # Hardware profile qualification applies to (e.g. "linux_pascal_8gb"). Default:
+    # Hardware profile qualification applies to (e.g. "windows_blackwell_16gb"). Default:
     # derived from the detected hardware (`aerochorus worker inventory`), never a hostname.
     hardware_profile: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_]*$")
     heartbeat_interval_seconds: float = 30.0

@@ -2,9 +2,8 @@
 
 This runbook covers starting the system, checking it, running the tests,
 and processing real data. Everything runs on the RTX 5080 box (JesseePC,
-Windows 11) today, and every command below has been run there. The planned
-long-term host is the Linux desktop with the GTX 1070, running containers only
-(§10).
+Windows 11), and every command below has been run there. A move to H100
+hosts may follow (§10).
 
 > Shell note: commands are shown for PowerShell or Git Bash, run from the
 > repository folder (`cd C:\Users\sagej\Projects\atctranscribe`). Every
@@ -23,11 +22,11 @@ long-term host is the Linux desktop with the GTX 1070, running containers only
 - [7. Evaluating against ATCO2](#7-evaluating-against-atco2)
 - [8. Qualifying models into `full-lab-v1`](#8-qualifying-models-into-full-lab-v1)
 - [9. Unattended operation](#9-unattended-operation)
-- [10. Production host (Linux, GTX 1070)](#10-production-host-linux-gtx-1070)
+- [10. Other hosts](#10-other-hosts)
 - [11. Troubleshooting](#11-troubleshooting)
 - [12. Reference](#12-reference)
 - [13. Review workbench (Phase 5)](#13-review-workbench-phase-5)
-- [14. A full day on this PC, and the whole archive](#14-a-full-day-on-this-pc-windows-rtx-5080-the-pre-migration-check)
+- [14. A full day on this PC, and the whole archive](#14-a-full-day-on-this-pc-windows-rtx-5080)
 
 ---
 
@@ -187,7 +186,7 @@ docker compose exec -T postgres pg_restore -U aerochorus -d aerochorus --clean -
 | 3 Automated model sweeps | done (CLI) | Sweep 2: six families × 100 segments, with kill -9 mid-run and a clean resume. Sweep 3: one hour (333 segments) × 4 families. Model runs and sweeps advance automatically; 0 errors |
 | 4 Evaluation / regression | done | ATCO2 benchmark (877 clips, gold in an isolated schema, derived calibration/test split); one symmetric scorer; entity recall; best-single + oracle; background quality flags on every result; v1 hypotheses re-scored for comparison |
 | 5 Research UI | done | Review workbench (agreement, gold/silver, spans); Transcribe page (runs, health, ETA, model voting, two models at once); ADS-B map; paid adjudication; test-pack download |
-| Linux deployment | prepared | Containers only, built here and shipped as a bundle (ADR-023); not yet installed on the host (§10) |
+| Linux (GTX 1070) deployment | dropped (2026-10-14) | This PC runs everything; H100 hosts may follow (§10) |
 | 6+ | not started | |
 
 Components:
@@ -277,8 +276,7 @@ uv run aerochorus source add home_atc_archive --name "Home ATC archive (BWI)" \
    and update `image`. Model runs already started under the old digest will
    refuse to resume on the new one (ADR-014). Finish them or start new sweeps.
 
-   The digest above is CrispASR **0.8.39** (2026-09-30). The Linux host pins
-   the same release in `deploy/linux/crispasr.lock`. It replaced 0.8.37
+   The digest above is CrispASR **0.8.39** (2026-09-30). It replaced 0.8.37
    (`sha256:bc53f7a8…`): 0.8.37's omniasr CTC windowing left a tail window too
    short for the model's convolutions, so the server aborted on every 9,072 ms
    file. Sweeps up to 12 ran on 0.8.37; each model run records its runtime.
@@ -704,18 +702,14 @@ it if it exits.
 
 ---
 
-## 10. Production host (Linux, GTX 1070)
+## 10. Other hosts
 
-The long-term host is the Linux desktop with the GTX 1070. It runs
-**containers only**: the images are built on this PC and shipped as a bundle,
-and no development tools are installed on the host (ADR-021, ADR-023).
-
-- Deployment: [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md)
-- Moving the database and artifacts: [deployment/MIGRATION.md](deployment/MIGRATION.md)
-- The steps from this PC: §14.9
-
-Until then, this PC runs everything (see
-[Start here](#start-here-starting-aerochorus-after-a-restart)).
+This PC runs everything (see
+[Start here](#start-here-starting-aerochorus-after-a-restart)). It transcribes
+fast enough that transcription is no longer the bottleneck. The planned GTX 1070
+Linux host was dropped on 2026-10-14, together with its deployment kit
+(ADR-021 and ADR-023 are kept as history, marked superseded). A later move to
+H100 hosts, or to the laptop, will get its own instructions then.
 
 ---
 
@@ -892,9 +886,7 @@ uv run aerochorus adjudicate list                  # batches, progress, spend vs
 uv run aerochorus adjudicate show <batch>          # items and transcripts
 ```
 
-On the Linux host, put the key in `/etc/aerochorus/aerochorus.env`, then
-run `sudo systemctl enable --now aerochorus-adjudicator.service`. The
-control plane's limits:
+The control plane's limits:
 
 | setting | default |
 | --- | --- |
@@ -906,11 +898,10 @@ control plane's limits:
 Prices come from OpenRouter's public model list. If it is unreachable, the
 `AEROCHORUS_ADJUDICATION_PRICE_*` defaults are used.
 
-## 14. A full day on this PC (Windows, RTX 5080): the pre-migration check
+## 14. A full day on this PC (Windows, RTX 5080)
 
-This runs everything end to end on the dev PC before the Linux move:
-transcribe one day, review it, look at ADS-B, and optionally adjudicate a
-few segments. Nothing here touches the Linux host.
+This runs everything end to end on this PC: transcribe one day, review it,
+look at ADS-B, and optionally adjudicate a few segments.
 
 ### 14.1 Start (each session)
 
@@ -943,8 +934,8 @@ On the **Transcribe** page (`http://127.0.0.1:8080/transcribe`):
    same family as `canary-1b-v2-q8_0-beam4`, so it adds time but no
    independent agreement. That leaves 6 models from 6 families.
 3. Tick **Allow models not yet qualified for full sweeps**. Qualification
-   is per hardware profile, so every model is "unqualified" until §8 or
-   the Linux qualification is run.
+   is per hardware profile, so every model is "unqualified" until §8 is
+   run.
 4. The preview updates as you choose: segments, audio hours and estimated
    minutes per model. Then click **Queue transcription run**.
 
@@ -1113,16 +1104,3 @@ What recovers by itself:
 What does not recover by itself: a Windows restart. After one, run the
 start script ([Start here](#start-here-starting-aerochorus-after-a-restart)),
 and the run continues where it stopped.
-
-### 14.9 When it looks right: migrate
-
-1. Stop the worker and adjudicator (Ctrl-C), and let no run or batch be
-   active.
-2. Export the database ([deployment/MIGRATION.md](deployment/MIGRATION.md)
-   §1).
-3. Build the deploy bundle
-   (`powershell -ExecutionPolicy Bypass -File deploy\linux\package.ps1`).
-4. Follow
-   [deployment/LINUX_DEPLOYMENT_RUNBOOK.md](deployment/LINUX_DEPLOYMENT_RUNBOOK.md):
-   copy the bundle, then `sudo bash host-setup.sh`, `bash deploy.sh up`,
-   and `import.sh`.

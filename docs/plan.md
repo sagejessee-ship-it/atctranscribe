@@ -35,6 +35,8 @@ architecture.
 > with 8 GB of RAM and is only a browser client. The primary host is a Linux
 > desktop with a GTX 1070 (8 GB) and 32 GB of RAM. The priorities below still
 > apply to that host.
+>
+> **Superseded again (2026-10-14):** the GTX 1070 Linux host was dropped; the Windows RTX 5080 PC runs everything, and H100 hosts may follow.
 
 **M1 MacBook Air (16 GB).** This becomes the primary background processing
 host. Priorities, in order: low operational burden, low power, unattended
@@ -118,7 +120,7 @@ modifies the original evidence.
 - **Backend:** Python, FastAPI, Pydantic 2, SQLAlchemy 2, Alembic, PostgreSQL,
   `uv`.
 - **Worker:** a small native Python process on macOS. It talks to the API, not
-  PostgreSQL, so an M1, a Linux GPU box, the 5080 or a future machine can all
+  PostgreSQL, so the 5080, an H100 host or a future machine can all
   be workers without control-plane changes.
 - **Front end (later):** React, TypeScript, Vite, TanStack Query, TanStack
   Table, shadcn/ui, WaveSurfer.js. One component/design system. The look is a

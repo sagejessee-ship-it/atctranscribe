@@ -274,9 +274,8 @@ It costs money, so it is deliberate at every step:
    then "Send N to Gemini". The server re-prices and refuses if the estimate
    moved.
 4. **Run**: `aerochorus adjudicate run --follow` on the host with the audio
-   and `AEROCHORUS_OPENROUTER_API_KEY`. On Linux this is
-   `aerochorus-adjudicator.service`, installed but not enabled. Each item is
-   sent only if its worst case still fits the cap.
+   and `AEROCHORUS_OPENROUTER_API_KEY`. Each item is sent only if its worst
+   case still fits the cap.
 5. **Review**: in the inspector, "Use as correction" to check and save the
    text yourself (as gold if you listened and it is exact), or "Accept as
    silver". The Adjudication page shows batches, progress, spend against the
@@ -295,8 +294,8 @@ optionally a random sample), then choose models (default: every voting
 model). A preview shows segments, audio hours and the estimated time per model
 from observed speed. Runs show progress, ETA, pause/resume/cancel, and the
 worker's status. Nothing starts until you press "Queue transcription run".
-A worker must be running to process it: `aerochorus worker transcribe`, or
-the `worker` service on the Linux host.
+A worker must be running to process it: `aerochorus worker run` (or
+`deploy\windows\run-worker.ps1`, which restarts it and keeps a log).
 
 **Model voting** (same page) lists every model that is enabled or has
 results. Each row shows whether it votes in agreement or is research-only,

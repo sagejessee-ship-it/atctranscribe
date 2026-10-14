@@ -3,8 +3,7 @@
 One server per model: start it with the model loaded, transcribe the whole
 window through it, stop it. Two launchers share the same HTTP contract:
 
-* ``native`` spawns a pinned ``crispasr`` binary (the Linux CUDA 12 build on the
-  GTX 1070 host, ADR-021; Windows CUDA; CPU builds);
+* ``native`` spawns a pinned ``crispasr`` binary (CUDA or CPU builds);
 * ``docker`` runs the published CrispASR server image with GPU passthrough.
 
 Per-model memory/offload settings (``ModelRuntime``) are applied at launch and

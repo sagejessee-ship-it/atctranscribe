@@ -1,6 +1,6 @@
-# Export AeroChorus state from the Windows dev box (RTX 5080) for the Linux host.
+# Full export of AeroChorus state on this Windows PC: a backup, or the input to a move.
 # Read-only on the source: pg_dump + copies of AeroChorus-owned files. Collector
-# audio is never copied. Models are re-downloaded on Linux (pinned by sha256).
+# audio is never copied. Models are re-downloaded where needed (pinned by sha256).
 #
 #   powershell -File deploy\migrate\export-windows.ps1 [-Out C:\Users\sagej\aerochorus-data\migration]
 param(
@@ -35,6 +35,4 @@ Get-ChildItem $dest -File | Where-Object Name -ne "SHA256SUMS" | ForEach-Object 
   "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 } | Set-Content -Encoding ascii "$dest\SHA256SUMS"
 Get-ChildItem $dest | Format-Table Name, Length
-Write-Host "Copy $dest to the Linux host and import it there (docs/deployment/MIGRATION.md):"
-Write-Host "  scp -r `"$dest`" <user>@<linux-host>:/srv/aerochorus/backups/migration-$stamp"
-Write-Host "  /srv/aerochorus/deploy/import.sh /srv/aerochorus/backups/migration-$stamp"
+Write-Host "Export written to $dest (restore: docs/deployment/BACKUP.md). Copy it off this PC."

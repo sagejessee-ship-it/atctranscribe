@@ -1,6 +1,5 @@
 # Development control plane on this PC (Windows / 5080). The worker, CrispASR and the
-# review edge run natively here. The Linux host runs everything in containers from
-# deploy/linux/compose.yml instead (ADR-023).
+# review edge run natively here.
 name: aerochorus
 
 services:
@@ -47,8 +46,8 @@ services:
       # Model adjudication (ADR-022): the API plans and prices batches but never holds
       # the OpenRouter key. The runner (`aerochorus adjudicate run`) on the audio host does.
     ports:
-      # Loopback by default. On the host that serves remote workers (e.g. the
-      # Linux host serving the 5080 box), set AEROCHORUS_API_BIND to its LAN address.
+      # Loopback by default. To serve workers on other machines, set
+      # AEROCHORUS_API_BIND to this host's LAN address.
       # There is no authentication: bind only to a trusted network.
       - "${AEROCHORUS_API_BIND:-127.0.0.1}:${AEROCHORUS_API_PORT:-8000}:8000"
     depends_on:

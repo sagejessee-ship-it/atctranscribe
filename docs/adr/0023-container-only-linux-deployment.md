@@ -1,6 +1,8 @@
 # ADR-023: The Linux host runs containers only
 
-Status: Accepted (2026-09-27). Amends [ADR-021](0021-linux-pascal-deployment.md),
+Status: **Superseded (2026-10-14):** the GTX 1070 Linux host was dropped; the Windows RTX 5080 PC runs everything, and H100 hosts may follow. `deploy/linux`, the worker image and
+the Linux runbooks were removed; this record is kept as history. Originally: accepted
+(2026-09-27). Amends [ADR-021](0021-linux-pascal-deployment.md),
 which had the worker and review edge as native systemd services.
 
 ## Context

@@ -9,7 +9,6 @@ were gathered from a full read-only profile of the share on 2026-09-26.
 | --- | --- |
 | Linux collector (SMB export) | `\\192.168.68.84\bwi` |
 | Windows dev box | `\\192.168.68.84\bwi` |
-| Linux host (GTX 1070, primary; ADR-021) | CIFS mount read-only at `/mnt/aerochorus/atc` (deploy/linux/fstab.example) |
 | Intel Mac | browser client only (no mount needed) |
 
 ## Collector

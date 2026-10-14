@@ -1,6 +1,10 @@
 # ADR-021: Primary deployment on Linux with a GTX 1070 (8 GB) and 32 GB RAM
 
-Status: Accepted (2026-09-27). Supersedes the macOS parts of ADR-005 and the
+Status: Accepted (2026-09-27). **Partly superseded (2026-10-14):** the GTX 1070 Linux host was dropped; the Windows RTX 5080 PC runs everything, and H100 hosts may follow. The
+host, CUDA 12 on Pascal and the deployment kit no longer apply (the kit was removed).
+Hardware profiles, per-profile qualification and the eligibility rules still stand.
+
+Originally: Supersedes the macOS parts of ADR-005 and the
 "M1 as control plane" plan (docs/plan.md, runbook §10). **Amended by
 [ADR-023](0023-container-only-linux-deployment.md):** the worker and review edge
 now run as containers (GPU via the NVIDIA Container Toolkit) instead of native
