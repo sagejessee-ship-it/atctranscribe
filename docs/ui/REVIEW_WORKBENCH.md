@@ -47,6 +47,26 @@ batch:    (when rows are checked) N selected · Add as candidate · Mark silver 
 body:     filter rail | segment grid (sticky header, virtual rows, pager) | ⋮ | inspector (resizable)
 ```
 
+### The Transcript column
+
+It is never a blend. A row shows exactly one text:
+
+- **H**: the current human transcript, if a reviewer saved one.
+- **M**: otherwise the *representative text*: one model's own words, chosen from
+  the stored agreement analysis.
+  - **exact**: two or more model families wrote identical text (case and edge
+    punctuation ignored). The group's text is shown.
+  - **near**: no exact agreement, but families nearly agree (similarity ≥ the
+    near-match threshold). The text of the group's anchor model is shown.
+  - **medoid**: no two families agree. The hypothesis most similar to all the
+    others is shown.
+  - **single**: only one model produced words.
+
+Underlined words are agreed utterances: stretches that 2+ families say
+identically. Hovering a transcript opens a card with the whole text, whose
+words it is (`representative_models`) and the families behind it
+(`representative_families`). The cell itself is cut to one line.
+
 The inspector sections, top to bottom:
 
 1. **Identity**: UTC, local time and zone, airport, frequency and the

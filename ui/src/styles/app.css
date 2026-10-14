@@ -489,6 +489,28 @@ a {
 .helptip__arrow {
   fill: var(--surface-1);
 }
+/* The whole transcript of a grid row, on hover (the cell shows one line). */
+.transcript-card {
+  max-width: min(560px, calc(100vw - 24px));
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-pop);
+  color: var(--text);
+  line-height: 1.45;
+  z-index: 50;
+}
+.transcript-card__text {
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transcript-card__source {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
 .glossary {
   margin: 0;
 }

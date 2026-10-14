@@ -412,21 +412,67 @@ def query_segments(session: Session, body: ReviewQuery) -> ReviewPage:
     column = SORT_COLUMNS[body.sort]
     order = column.desc().nulls_last() if body.descending else column.asc().nulls_last()
     tiebreak = Segment.id.desc() if body.descending else Segment.id.asc()
-    rows = session.execute(query.order_by(order, tiebreak).offset(body.offset).limit(body.limit))
+    rows = session.execute(
+        query.order_by(order, tiebreak).offset(body.offset).limit(body.limit)
+    ).all()
     stations = station_map(session)
+    medoid_models = _medoid_models(session, [sa for _, _, sa, _, _ in rows])
     return ReviewPage(
         total=total,
         offset=body.offset,
         limit=body.limit,
         rows=[
-            _row(seg, key, sa, version, spans, stations) for seg, key, sa, version, spans in rows
+            _row(seg, key, sa, version, spans, stations, medoid_models)
+            for seg, key, sa, version, spans in rows
         ],
         near_threshold=near_threshold(),
         agreement_version=AGREEMENT_VERSION,
     )
 
 
-def _row(seg, source_key, sa, version, span_count, stations) -> ReviewRow:
+def _representative_origin(sa, medoid_models: dict[int, list[str]]) -> tuple[list[str], list[str]]:
+    """(models whose words the representative text is, families agreeing with it)."""
+    if sa is None or not sa.representative_text:
+        return [], []
+    if sa.representative_source == "exact" and sa.exact_groups:
+        group = sa.exact_groups[0]
+        return list(group.get("providers") or []), list(group.get("families") or [])
+    if sa.representative_source == "near" and sa.near_group:
+        near = sa.near_group
+        return [near["anchor_model"]], list(near.get("families") or [])
+    return medoid_models.get(sa.segment_id, []), []
+
+
+def _medoid_models(session: Session, agreements) -> dict[int, list[str]]:
+    """For medoid/single representatives (no agreement record names the model): the
+    models whose current text is exactly the representative text."""
+    wanted = {
+        sa.segment_id: sa.representative_text
+        for sa in agreements
+        if sa is not None
+        and sa.representative_text
+        and sa.representative_source in ("medoid", "single")
+    }
+    if not wanted:
+        return {}
+    rows = session.execute(
+        select(TranscriptionResult.segment_id, Model.logical_name, TranscriptionResult.text)
+        .join(SweepRunModel, SweepRunModel.id == TranscriptionResult.sweep_run_model_id)
+        .join(Model, Model.id == SweepRunModel.model_id)
+        .where(
+            TranscriptionResult.segment_id.in_(wanted),
+            TranscriptionResult.status == "success",
+        )
+    )
+    out: dict[int, list[str]] = {}
+    for segment_id, model, text in rows:
+        if (text or "").strip() == wanted[segment_id] and model not in out.get(segment_id, []):
+            out.setdefault(segment_id, []).append(model)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _row(seg, source_key, sa, version, span_count, stations, medoid_models=None) -> ReviewRow:
+    models, families = _representative_origin(sa, medoid_models or {})
     return ReviewRow(
         segment_id=seg.id,
         source_key=source_key,
@@ -446,6 +492,8 @@ def _row(seg, source_key, sa, version, span_count, stations) -> ReviewRow:
         best_near_similarity=sa.best_near_similarity if sa else None,
         representative_text=sa.representative_text if sa else None,
         representative_source=sa.representative_source if sa else None,
+        representative_models=models,
+        representative_families=families,
         review_status=version.review_status if version else ReviewStatus.UNREVIEWED,
         training_label=version.training_label if version else TrainingLabel.NONE,
         human_text=version.text if version and version.text_origin == "human" else None,

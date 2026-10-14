@@ -105,6 +105,9 @@ export interface ReviewRow {
   best_near_similarity: number | null;
   representative_text: string | null;
   representative_source: string | null;
+  /** Whose words the representative text is, and the families agreeing with it. */
+  representative_models: string[];
+  representative_families: string[];
   review_status: ReviewStatus;
   training_label: TrainingLabel;
   human_text: string | null;

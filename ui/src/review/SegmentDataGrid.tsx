@@ -10,12 +10,14 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { ArrowDown, ArrowUp } from "lucide-react";
+import { HoverCard } from "radix-ui";
 
 import type { ReviewRow, SortKey } from "../api/types";
 import { AgreementBadge, Badge, StatusBadge, TrainingBadge } from "../components/badges";
 import { HighlightedText } from "../components/HighlightedText";
 import { fmtDuration, fmtSim, fmtUtc } from "../lib/format";
 import { columnHelp } from "./glossary";
+import { highlightNote, transcriptSource } from "./transcriptSource";
 
 interface Meta {
   sort?: SortKey;
@@ -58,22 +60,39 @@ function RiskCell({ row }: { row: ReviewRow }) {
   return parts.length ? <span className="cell-badges">{parts}</span> : <span className="muted">—</span>;
 }
 
+/** The transcript, cut to one line in the grid; hovering shows all of it and whose it is. */
 function TextCell({ row }: { row: ReviewRow }) {
-  if (row.human_text)
-    return (
-      <span className="cell-text">
-        <span className="origin origin--human" title="human transcript">H</span>
-        {row.human_text}
-      </span>
-    );
-  if (row.representative_text)
-    return (
-      <span className="cell-text">
-        <span className="origin origin--model" title={`model consensus (${row.representative_source ?? "?"})`}>M</span>
-        <HighlightedText text={row.representative_text} highlights={row.representative_highlights ?? []} />
-      </span>
-    );
-  return <span className="muted">{row.results_count ? "(no words)" : "(untranscribed)"}</span>;
+  if (!row.human_text && !row.representative_text)
+    return <span className="muted">{row.results_count ? "(no words)" : "(untranscribed)"}</span>;
+  const source = transcriptSource(row);
+  const note = highlightNote(row);
+  const words = row.human_text ? (
+    row.human_text
+  ) : (
+    <HighlightedText text={row.representative_text ?? ""} highlights={row.representative_highlights ?? []} />
+  );
+  return (
+    <HoverCard.Root openDelay={300} closeDelay={80}>
+      <HoverCard.Trigger asChild>
+        <span className="cell-text">
+          {row.human_text ? (
+            <span className="origin origin--human" title="human transcript">H</span>
+          ) : (
+            <span className="origin origin--model" title={source}>M</span>
+          )}
+          {words}
+        </span>
+      </HoverCard.Trigger>
+      <HoverCard.Portal>
+        <HoverCard.Content className="transcript-card" side="bottom" align="start" sideOffset={4} collisionPadding={12}>
+          <p className="transcript-card__text">{words}</p>
+          <p className="transcript-card__source">{source}</p>
+          {note && <p className="transcript-card__source">{note}</p>}
+          <HoverCard.Arrow className="helptip__arrow" />
+        </HoverCard.Content>
+      </HoverCard.Portal>
+    </HoverCard.Root>
+  );
 }
 
 const columns: ColumnDef<ReviewRow>[] = [

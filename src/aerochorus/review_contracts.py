@@ -161,7 +161,11 @@ class ReviewRow(BaseModel):
     best_near_family_count: int
     best_near_similarity: float | None
     representative_text: str | None
-    representative_source: str | None
+    representative_source: str | None  # exact / near / medoid / single
+    # Whose words the representative text is, and the families that agree with it
+    # (exact: the identical group; near: the anchor and its near-matches).
+    representative_models: list[str] = Field(default_factory=list)
+    representative_families: list[str] = Field(default_factory=list)
     review_status: ReviewStatus
     training_label: TrainingLabel
     human_text: str | None

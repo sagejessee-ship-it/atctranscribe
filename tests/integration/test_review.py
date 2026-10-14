@@ -191,6 +191,24 @@ def test_defaults_hide_benchmark_and_untranscribed(http, seeded):
     assert "b1_benchmark" in names(query(http, include_benchmark=True), seeded)
 
 
+def test_rows_say_whose_words_the_representative_text_is(http, seeded):
+    rows = {r["segment_id"]: r for r in query(http)["rows"]}
+    exact = rows[seeded["s1_consensus"]]
+    assert exact["representative_source"] == "exact"
+    assert exact["representative_models"] == ["canary-a", "parakeet-a", "whisper-a"]
+    assert exact["representative_families"] == ["canary", "parakeet", "whisper"]
+    near = rows[seeded["s3_near"]]
+    assert near["representative_source"] == "near"
+    (anchor,) = near["representative_models"]  # the anchor's own words, not a blend
+    assert near["representative_text"] == HYPOTHESES["s3_near"][anchor][1]
+    assert near["representative_families"] == ["canary", "parakeet"]
+    # No two families agree: the medoid. Two canary models wrote it (one family).
+    medoid = rows[seeded["s2_disagree"]]
+    assert medoid["representative_source"] == "medoid"
+    assert medoid["representative_models"] == ["canary-a", "canary-b"]
+    assert medoid["representative_families"] == []
+
+
 def test_agreement_views(http, seeded):
     assert names(query(http, **preset(http, "exact-2-families")), seeded) == {"s1_consensus"}
     assert names(query(http, **preset(http, "near-3-families")), seeded) == {"s1_consensus"}
