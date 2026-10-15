@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -281,15 +282,47 @@ class NativeLauncher:
         )
 
 
+# Every CrispASR server container this machine's worker starts is named
+# aerochorus-crispasr-<port>.
+CONTAINER_PREFIX = "aerochorus-crispasr-"
+# On Windows a console Ctrl-C reaches every process in the console's group. Docker CLI
+# calls get their own group, so stopping the worker cannot also kill the `docker stop`
+# that shuts a server down (which left containers holding GPU memory).
+_DOCKER_FLAGS = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else 0
+
+
+def _docker(*args: str, timeout: float = 120) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        creationflags=_DOCKER_FLAGS,
+    )
+
+
+def remove_stale_servers(config: CrispAsrConfig) -> list[str]:
+    """CrispASR containers left by an interrupted worker hold GPU memory nothing uses.
+    Only this machine's worker starts them, so `worker run` removes them at startup,
+    before any server starts. Returns the names removed."""
+    if config.launcher != "docker":
+        return []
+    listed = _docker("ps", "-a", "--filter", f"name={CONTAINER_PREFIX}", "--format", "{{.Names}}")
+    names = [n for n in listed.stdout.split() if n.startswith(CONTAINER_PREFIX)]
+    if names:
+        _docker("rm", "-f", *names, timeout=180)
+    return names
+
+
 class DockerLauncher:
     CONTAINER_PORT = 8080
 
     def __init__(self, config: CrispAsrConfig) -> None:
         self.config = config
-        self.name = f"aerochorus-crispasr-{config.host_port}"
+        self.name = f"{CONTAINER_PREFIX}{config.host_port}"
 
     def _docker(self, *args: str, timeout: float = 120) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+        return _docker(*args, timeout=timeout)
 
     def runtime(self) -> Runtime:
         inspect = self._docker("image", "inspect", self.config.image, "--format", "{{.Id}}")

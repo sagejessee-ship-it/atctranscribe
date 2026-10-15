@@ -77,8 +77,12 @@ def run(
         scanner = CorpusScanner(client, config)
         sweeper = None
         if config.transcription is not None and config.process_sweeps:
+            from aerochorus.worker.crispasr import remove_stale_servers
             from aerochorus.worker.transcriber import SlotRegistry, SweepWorker
 
+            stale = remove_stale_servers(config.transcription.crispasr)
+            if stale:
+                log.warning("removed CrispASR servers left by an earlier run: %s", stale)
             registry = SlotRegistry()
             sweeper = SweepWorker(client, config, stop=stop, registry=registry)
             log.info(

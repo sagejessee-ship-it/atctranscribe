@@ -169,3 +169,27 @@ def test_catalog_is_pinned_and_consistent():
     voters = {m.logical_name for m in catalog.models if m.ensemble_eligible}
     original = next(s for s in catalog.suites if s.name == "qualification")
     assert set(original.models) <= voters
+
+
+def test_stale_crispasr_servers_are_removed_at_startup_and_nothing_else(monkeypatch):
+    import subprocess
+    import sys
+
+    from aerochorus.worker import crispasr
+    from aerochorus.worker.config import CrispAsrConfig
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        out = "aerochorus-crispasr-8091\naerochorus-crispasr-8092\naerochorus-vllm-local-small-1\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout=out if cmd[1] == "ps" else "", stderr="")
+
+    monkeypatch.setattr(crispasr.subprocess, "run", fake_run)
+    assert crispasr.remove_stale_servers(CrispAsrConfig(launcher="native")) == []
+    assert calls == []  # a native launcher has no containers to clean up
+    removed = crispasr.remove_stale_servers(CrispAsrConfig(launcher="docker"))
+    assert removed == ["aerochorus-crispasr-8091", "aerochorus-crispasr-8092"]  # never vLLM
+    assert calls[-1][0] == ["docker", "rm", "-f", *removed]
+    if sys.platform == "win32":  # a console Ctrl-C must not reach `docker stop`
+        assert all(k["creationflags"] == subprocess.CREATE_NEW_PROCESS_GROUP for _, k in calls)
