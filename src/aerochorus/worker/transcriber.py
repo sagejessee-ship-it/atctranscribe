@@ -14,7 +14,9 @@ import posixpath
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,7 +37,7 @@ from aerochorus.sweep_contracts import (
 from aerochorus.worker import hardware
 from aerochorus.worker.artifacts import ArtifactStore
 from aerochorus.worker.client import ApiClient, ApiError
-from aerochorus.worker.config import WorkerConfig
+from aerochorus.worker.config import ModelRuntime, WorkerConfig
 from aerochorus.worker.crispasr import (
     CrispAsrError,
     Launcher,
@@ -119,6 +121,55 @@ class Released(Exception):
     """The model run was handed back to the queue (pause, cancel, shutdown)."""
 
 
+class _SegmentFeed:
+    """A model run's pending segments, fetched in batches behind one cursor and handed
+    out once each. Thread-safe: several server copies draw from it. It also releases the
+    run (once) when the worker stops or the sweep is no longer running."""
+
+    def __init__(self, worker: SweepWorker, claim: ModelRunClaim) -> None:
+        self.worker = worker
+        self.claim = claim
+        self.lock = threading.Lock()
+        self.buffer: deque[PendingSegment] = deque()
+        self.cursor = -1  # the highest sweep ordinal handed out in this claim
+        self.closed = False
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+
+    def _release(self, reason: str) -> Released:
+        self.closed = True
+        self.worker.client.release_model_run(
+            self.claim.sweep_model_id, self.worker.config.worker_name, reason
+        )
+        return Released(reason)
+
+    def next(self) -> PendingSegment | None:
+        with self.lock:
+            if self.closed:
+                return None
+            w = self.worker
+            if w.stop.is_set():
+                raise self._release("worker stopping")
+            if not self.buffer:
+                batch = w.client.pending_segments(
+                    self.claim.sweep_model_id, w.tc.pending_batch, after_ordinal=self.cursor
+                )
+                if batch.sweep_status != SweepStatus.RUNNING or (
+                    batch.model_status != ModelRunStatus.RUNNING
+                ):
+                    raise self._release(f"sweep is {batch.sweep_status}")
+                if not batch.segments:
+                    self.closed = True
+                    return None
+                ordinals = [s.ordinal for s in batch.segments if s.ordinal is not None]
+                if ordinals:
+                    self.cursor = max(self.cursor, *ordinals)
+                self.buffer.extend(batch.segments)
+            return self.buffer.popleft()
+
+
 @dataclass
 class Outcome:
     sweep_id: int
@@ -152,6 +203,8 @@ class SweepWorker:
         # Each slot runs its own CrispASR server: its own port (and container name).
         crisp = self.tc.crispasr.model_copy(update={"host_port": self.tc.crispasr.host_port + slot})
         self.launcher = launcher or make_launcher(crisp)
+        self._shared_launcher = launcher is not None  # injected (tests): one for every copy
+        self._copy_launchers: dict[int, Launcher] = {}
         self.hardware_profile = resolve_profile(config.hardware_profile)
         self.stop = stop or threading.Event()
         self.readers = {
@@ -200,6 +253,29 @@ class SweepWorker:
         if free is None or free - self.tc.vram_headroom_mb < 256:
             return None
         return [held for held, _ in others], free - self.tc.vram_headroom_mb
+
+    def _launcher_for(self, copy: int) -> Launcher:
+        """Copy 0 is the slot's own server. Further copies of the same model get their own
+        port and container: host_port + slot + 2 x copy (8090/8092/... for slot 0,
+        8091/8093/... for slot 1)."""
+        if copy == 0 or self._shared_launcher:
+            return self.launcher
+        if copy not in self._copy_launchers:
+            port = self.tc.crispasr.host_port + self.slot + 2 * copy
+            self._copy_launchers[copy] = make_launcher(
+                self.tc.crispasr.model_copy(update={"host_port": port})
+            )
+        return self._copy_launchers[copy]
+
+    def _room_for_copy(self, per_copy_mb: int) -> tuple[bool, int | None]:
+        """(may another copy start, free GPU memory in MB). Never while another slot's
+        model is still loading: its memory is not visible yet."""
+        if any(not loaded for _, loaded in self.registry.others(self.slot)):
+            return False, None
+        free = hardware.gpu_memory_free_mb()
+        if free is None:
+            return False, None
+        return free - self.tc.vram_headroom_mb >= per_copy_mb, free
 
     def _readable_sources(self) -> list[str]:
         """Sources this worker can read right now. Runs over a share that is down are not
@@ -272,7 +348,7 @@ class SweepWorker:
     def _process(self, claim: ModelRunClaim) -> Outcome:
         model = claim.model
         outcome = Outcome(claim.sweep_id, claim.sweep_model_id, model.logical_name, "", 0)
-        server: Server | None = None
+        servers: list[Server] = []
         try:
             model_path = self._ensure_model(claim)
             runtime = self.launcher.runtime()
@@ -289,32 +365,45 @@ class SweepWorker:
                     "differs from the one the model run started with; results would not be "
                     "comparable. Create a new sweep to use this runtime."
                 )
-            log_path = self.log_dir / f"sweep{claim.sweep_id}-{model.logical_name}.log"
-            started = time.monotonic()
-            server = self.launcher.start(
-                model_path,
-                model.crisp_backend,
-                claim.request_params.get("language"),
-                log_path,
-                overrides=overrides,
-            )
-            health = server.wait_ready(self.tc.crispasr.startup_timeout_seconds)
-            self._verify_identity(claim, health, server)
-            load_s = round(time.monotonic() - started, 1)
-            log.info("%s loaded in %ss (%s)", model.logical_name, load_s, health)
-            self.registry.loaded(self.slot)
+            log_name = f"sweep{claim.sweep_id}-{model.logical_name}"
 
-            def restart() -> Server:
-                """A fresh server for the same model after a crash (same runtime and settings)."""
-                nonlocal server
-                server.stop()
-                server = self.launcher.start(
+            def start(copy: int) -> tuple[Server, dict[str, Any]]:
+                """One copy of the model's server, loaded and verified."""
+                suffix = f"-copy{copy}" if copy else ""
+                server = self._launcher_for(copy).start(
                     model_path,
                     model.crisp_backend,
                     claim.request_params.get("language"),
-                    log_path,
+                    self.log_dir / f"{log_name}{suffix}.log",
                     overrides=overrides,
                 )
+                servers.append(server)  # stopped in `finally` whatever happens next
+                health = server.wait_ready(self.tc.crispasr.startup_timeout_seconds)
+                self._verify_identity(claim, health, server)
+                return server, health
+
+            started = time.monotonic()
+            free_before = (
+                hardware.gpu_memory_free_mb() if (overrides and overrides.replicas > 1) else None
+            )
+            server, health = start(0)
+            load_s = round(time.monotonic() - started, 1)
+            log.info("%s loaded in %ss (%s)", model.logical_name, load_s, health)
+            copies = self._start_copies(claim, overrides, free_before, start)
+            self.registry.loaded(self.slot)
+
+            def restart(copy: int) -> Server:
+                """A fresh server for one copy after a crash (same runtime and settings)."""
+                old = servers[copy]
+                old.stop()
+                server = self._launcher_for(copy).start(
+                    model_path,
+                    model.crisp_backend,
+                    claim.request_params.get("language"),
+                    self.log_dir / f"{log_name}{f'-copy{copy}' if copy else ''}.log",
+                    overrides=overrides,
+                )
+                servers[copy] = server
                 self._verify_identity(
                     claim, server.wait_ready(self.tc.crispasr.startup_timeout_seconds), server
                 )
@@ -328,6 +417,7 @@ class SweepWorker:
                     | {
                         "load_seconds": load_s,
                         "server": server.describe,
+                        "copies": copies,
                         "health": health,
                         "memory": memory,
                         "hardware_profile": self.hardware_profile,
@@ -336,7 +426,7 @@ class SweepWorker:
                     lease_seconds=self.tc.lease_seconds,
                 ),
             )
-            self._serve(claim, server, runtime, outcome, restart)
+            self._serve(claim, servers, runtime, outcome, restart)
             self._finish(claim, ModelRunStatus.COMPLETED, None)
             outcome.status = "completed"
         except Released as exc:
@@ -366,7 +456,7 @@ class SweepWorker:
                 log.warning("could not release model run %s", claim.sweep_model_id)
             raise
         finally:
-            if server is not None:
+            for server in servers:
                 server.stop()
         log.info(
             "model run %s (%s): %s after %s segments%s",
@@ -377,6 +467,42 @@ class SweepWorker:
             f" ({outcome.message})" if outcome.status == "released" and outcome.message else "",
         )
         return outcome
+
+    def _start_copies(
+        self,
+        claim: ModelRunClaim,
+        overrides: ModelRuntime | None,
+        free_before: int | None,
+        start: Callable[[int], tuple[Server, dict[str, Any]]],
+    ) -> int:
+        """Start further copies of the model's server, as configured and as memory allows.
+        A copy needs what the first one took (measured), else an estimate from the
+        artifact size. Returns how many copies serve this run."""
+        wanted = overrides.replicas if overrides else 1
+        if wanted <= 1:
+            return 1
+        model = claim.model
+        estimate = round((model.artifact_size_bytes or 0) / 2**20 * 1.25) + 500
+        free_after = hardware.gpu_memory_free_mb()
+        measured = free_before - free_after if free_before and free_after else 0
+        per_copy = measured if measured > 0 else estimate
+        copies = 1
+        while copies < wanted:
+            room, free = self._room_for_copy(per_copy)
+            if not room:
+                log.info(
+                    "%s: %s of %s copies (another needs ~%s MB; %s MB free, %s MB headroom)",
+                    model.logical_name, copies, wanted, per_copy, free, self.tc.vram_headroom_mb,
+                )  # fmt: skip
+                break
+            start(copies)
+            copies += 1
+        if copies > 1:
+            log.info(
+                "%s: %s copies of the server share this model run (~%s MB each)",
+                model.logical_name, copies, per_copy,
+            )  # fmt: skip
+        return copies
 
     def _ensure_model(self, claim: ModelRunClaim) -> Path:
         model = claim.model
@@ -419,98 +545,77 @@ class SweepWorker:
     def _serve(
         self,
         claim: ModelRunClaim,
-        server: Server,
+        servers: list[Server],
         runtime: Runtime,
         outcome: Outcome,
-        restart: Callable[[], Server],
+        restart: Callable[[int], Server],
     ) -> None:
-        consecutive_errors = 0
-        restarts = 0
-        smoke_done = False
-        # Segments that failed as the smoke test: recorded only once another segment
-        # proves the server works (then it was the audio), otherwise the run fails clean.
-        held: list[ResultPost] = []
-        held_ids: set[int] = set()
-
+        """Transcribe the run's pending segments on one server, or on several identical
+        copies at once. One feed (one cursor) hands each segment to exactly one copy. Each
+        copy keeps its own smoke test and error streak; the restart budget is shared."""
+        lock = threading.Lock()
+        feed = _SegmentFeed(self, claim)
+        shared = {"restarts": 0, "works": False}
         progress = {"at": time.monotonic(), "processed": 0, "errors": 0}
 
         def post(result: ResultPost) -> None:
             ack = self.client.post_result(claim.sweep_model_id, self.config.worker_name, result)
-            outcome.processed += 1
-            progress["errors"] += result.status == ResultStatus.ERROR
-            now = time.monotonic()
-            if now - progress["at"] >= PROGRESS_EVERY_S:
+            with lock:
+                outcome.processed += 1
+                progress["errors"] += result.status == ResultStatus.ERROR
+                now = time.monotonic()
+                if now - progress["at"] < PROGRESS_EVERY_S:
+                    return
                 rate = (outcome.processed - progress["processed"]) / (now - progress["at"])
-                left = ack.segments_total - ack.segments_recorded
-                log.info(
-                    "%s (sweep %s): %s/%s done, %.2f segments/s, %s errors so far, "
-                    "~%.1f h left for this model",
-                    claim.model.logical_name,
-                    claim.sweep_id,
-                    f"{ack.segments_recorded:,}",
-                    f"{ack.segments_total:,}",
-                    rate,
-                    progress["errors"],
-                    left / rate / 3600 if rate else float("nan"),
-                )
                 progress["at"], progress["processed"] = now, outcome.processed
-
-        def recover(segment: PendingSegment, result: ResultPost) -> Server:
-            nonlocal restarts, smoke_done
-            if not segment.retry:  # a known failure says nothing new about the backend
-                restarts += 1
-            if restarts > MAX_RESTARTS:
-                raise CrispAsrError(
-                    f"CrispASR restarted {restarts} times in this model run; last on "
-                    f"{segment.relative_path}: {result.error_type}: {result.error_message}"
-                )
-            log.warning(
-                "CrispASR %s on %s (%s); restarting (%s/%s)",
-                "timed out" if result.error_type == "timeout" else "exited",
-                segment.relative_path,
-                result.error_message,
-                restarts,
-                MAX_RESTARTS,
+                errors = progress["errors"]
+            left = ack.segments_total - ack.segments_recorded
+            log.info(
+                "%s (sweep %s): %s/%s done, %.2f segments/s, %s errors so far, "
+                "~%.1f h left for this model",
+                claim.model.logical_name,
+                claim.sweep_id,
+                f"{ack.segments_recorded:,}",
+                f"{ack.segments_total:,}",
+                rate,
+                errors,
+                left / rate / 3600 if rate else float("nan"),
             )
-            smoke_done = False  # the restarted server is smoke-tested again
-            return restart()
 
-        cursor = -1  # the highest sweep ordinal handed to this worker in this claim
-        while True:
-            batch = self.client.pending_segments(
-                claim.sweep_model_id, self.tc.pending_batch, after_ordinal=cursor
-            )
-            if batch.sweep_status != SweepStatus.RUNNING or (
-                batch.model_status != ModelRunStatus.RUNNING
-            ):
-                self.client.release_model_run(
-                    claim.sweep_model_id,
-                    self.config.worker_name,
-                    f"sweep is {batch.sweep_status}",
-                )
-                raise Released(f"sweep is {batch.sweep_status}")
-            if not batch.segments:
-                if held:  # nothing left, and the server never answered a smoke test
-                    raise SmokeFailed(
-                        f"smoke test: no remaining segment answered ({len(held)} failed); "
-                        f"last: {held[-1].error_type}: {held[-1].error_message}"
+        def lane(copy: int) -> None:
+            """One server copy: draw segments until the feed runs dry (the sequential loop
+            when there is only one copy)."""
+            server = servers[copy]
+            consecutive_errors = 0
+            smoke_done = False
+            # Segments that failed as this copy's smoke test: recorded only once the
+            # server proves to work (then it was the audio), otherwise the run fails clean.
+            held: list[ResultPost] = []
+
+            def recover(segment: PendingSegment, result: ResultPost) -> Server:
+                nonlocal smoke_done
+                with lock:
+                    if not segment.retry:  # a known failure says nothing new about the backend
+                        shared["restarts"] += 1
+                    restarts = shared["restarts"]
+                if restarts > MAX_RESTARTS:
+                    raise CrispAsrError(
+                        f"CrispASR restarted {restarts} times in this model run; last on "
+                        f"{segment.relative_path}: {result.error_type}: {result.error_message}"
                     )
-                return
-            ordinals = [s.ordinal for s in batch.segments if s.ordinal is not None]
-            if ordinals:
-                cursor = max(cursor, *ordinals)
-            todo = [s for s in batch.segments if s.segment_id not in held_ids]
-            if not todo:
-                raise SmokeFailed(
-                    f"smoke test: no remaining segment answered ({len(held)} failed); last: "
-                    f"{held[-1].error_type}: {held[-1].error_message}"
+                log.warning(
+                    "CrispASR %s on %s (%s); restarting %s(%s/%s)",
+                    "timed out" if result.error_type == "timeout" else "exited",
+                    segment.relative_path,
+                    result.error_message,
+                    f"copy {copy} " if len(servers) > 1 else "",
+                    restarts,
+                    MAX_RESTARTS,
                 )
-            for segment in todo:
-                if self.stop.is_set():
-                    self.client.release_model_run(
-                        claim.sweep_model_id, self.config.worker_name, "worker stopping"
-                    )
-                    raise Released("worker stopping")
+                smoke_done = False  # the restarted server is smoke-tested again
+                return restart(copy)
+
+            while (segment := feed.next()) is not None:
                 try:
                     result = self._transcribe(
                         claim, server, runtime, segment, smoke=not (smoke_done or segment.retry)
@@ -519,7 +624,6 @@ class SweepWorker:
                     if exc.result is None:
                         raise
                     held.append(exc.result)
-                    held_ids.add(segment.segment_id)
                     if len(held) >= MAX_SMOKE_SEGMENTS:
                         raise SmokeFailed(
                             f"smoke test failed on {len(held)} segments in a row; last: {exc}"
@@ -530,6 +634,7 @@ class SweepWorker:
                     continue
                 if not smoke_done and result.status != ResultStatus.ERROR:
                     smoke_done = True
+                    shared["works"] = True
                     for earlier in held:  # the server works: those segments made it fail
                         post(earlier)
                     held.clear()
@@ -546,6 +651,31 @@ class SweepWorker:
                         server = recover(segment, result)
                 else:
                     consecutive_errors = 0
+            if held:
+                if len(servers) > 1 and shared["works"]:
+                    # Another, identical copy proved the model works: it was the audio.
+                    for earlier in held:
+                        post(earlier)
+                    return
+                raise SmokeFailed(
+                    f"smoke test: no remaining segment answered ({len(held)} failed); "
+                    f"last: {held[-1].error_type}: {held[-1].error_message}"
+                )
+
+        if len(servers) == 1:
+            lane(0)
+            return
+        with ThreadPoolExecutor(len(servers), thread_name_prefix=f"slot{self.slot}-copy") as pool:
+            futures = [pool.submit(lane, copy) for copy in range(len(servers))]
+            pending = set(futures)
+            while pending:
+                done, pending = wait(pending, return_when="FIRST_EXCEPTION")
+                if any(f.exception() is not None for f in done):
+                    feed.close()  # the others finish their current segment and stop
+        errors = [f.exception() for f in futures if f.exception() is not None]
+        if errors:
+            # A failure outranks the release that may have stopped the other copies.
+            raise next((e for e in errors if not isinstance(e, Released)), errors[0])
 
     # -- one segment ------------------------------------------------------------------------
 

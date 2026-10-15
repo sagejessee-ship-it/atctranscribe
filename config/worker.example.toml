@@ -48,6 +48,13 @@ auto_pull_models = false
 # strategy = "kv-q8"
 # env = { CRISPASR_KV_QUANT = "q8_0" }
 
+# Copies of a slow model's server in one model run (more throughput while the GPU has
+# spare compute). Each copy holds its own weights; copies after the first start only if
+# free GPU memory minus vram_headroom_mb fits one more, on ports host_port + slot + 2,
+# + 4, ... Not part of the runtime fingerprint, so a run in progress resumes with them.
+# [transcription.model_runtime."gemma4-e2b-it-q4_k"]
+# replicas = 2
+
 # --- CrispASR: the CUDA server image, pinned by digest (see the runbook) ---
 [transcription.crispasr]
 launcher = "docker"

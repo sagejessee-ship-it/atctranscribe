@@ -1088,6 +1088,23 @@ Before leaving it alone:
 6. Check it now and then from the Transcribe page: progress, ETA, and the
    worker's heartbeat. Then check the log file.
 
+**Several copies of one slow model.** A model that leaves the GPU mostly idle
+(gemma4 used about 29% at 2.5 s per 5 s clip) gets more done with copies of its
+server working on the same run:
+
+```toml
+[transcription.model_runtime."gemma4-e2b-it-q4_k"]
+replicas = 3
+```
+
+After loading the first copy, the worker measures what it took. Each further copy
+starts only if free GPU memory minus `vram_headroom_mb` still fits one, and never
+while the other slot is loading; the log says how many copies run and why. All
+copies draw from one feed of the run's segments (no segment is sent twice). Each
+has its own smoke test, error streak and restarts; the run's restart budget is
+shared. The setting is not part of the runtime fingerprint, so a run already in
+progress picks it up when the worker restarts.
+
 **Two models at once.** With `max_concurrent_models = 2` in the worker config
 (`[transcription]`), `worker run` starts a second model next to the first. It does
 so only when the second one fits in **free** GPU memory minus `vram_headroom_mb`

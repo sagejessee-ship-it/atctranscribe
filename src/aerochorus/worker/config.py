@@ -61,6 +61,11 @@ class ModelRuntime(BaseModel):
     strategy: str = "default"
     env: dict[str, str] = Field(default_factory=dict)
     extra_args: list[str] = Field(default_factory=list)
+    # Identical copies of this model's server in one model run: more throughput for a
+    # slow model that leaves the GPU idle. Each copy loads its own weights; copies after
+    # the first start only while free GPU memory (minus vram_headroom_mb) fits one more.
+    # Same image, model and settings, so not part of the runtime fingerprint.
+    replicas: int = Field(default=1, ge=1, le=4)
 
 
 class TranscriptionConfig(BaseModel):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from fake_crispasr import FakeLauncher, default_script, fake_catalog, ok
 from integration_support import SOURCE_KEY, make_scanner
 from sqlalchemy import func, select
 
-from aerochorus.db.models import TranscriptionResult
+from aerochorus.db.models import Segment, SweepRunSegment, TranscriptionResult
 from aerochorus.sweep_contracts import (
     ClaimRequest,
     ModelRunStart,
@@ -26,7 +27,12 @@ from aerochorus.sweep_contracts import (
 )
 from aerochorus.worker.artifacts import ArtifactStore
 from aerochorus.worker.client import ApiError
-from aerochorus.worker.config import SourceMount, TranscriptionConfig, WorkerConfig
+from aerochorus.worker.config import (
+    ModelRuntime,
+    SourceMount,
+    TranscriptionConfig,
+    WorkerConfig,
+)
 from aerochorus.worker.crispasr import CrispAsrError, TranscribeResponse
 from aerochorus.worker.transcriber import SweepWorker
 
@@ -794,6 +800,141 @@ def test_two_slots_transcribe_two_models_at_once(api, db, lab, monkeypatch):
     assert overlap.is_set()  # both servers answered requests at the same time
     assert api.get_sweep(sweep.id).status == "completed"
     assert result_count(db) == 2 * SEGMENTS
+
+
+def crash(server):
+    server.alive = False
+    raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+
+def sweep_order(db, sweep_id: int) -> list[str]:
+    """Basenames of a sweep's segments in the order a worker gets them."""
+    return [
+        posixpath.basename(path)
+        for path in db.scalars(
+            select(Segment.relative_path)
+            .join(SweepRunSegment, SweepRunSegment.segment_id == Segment.id)
+            .where(SweepRunSegment.run_id == sweep_id)
+            .order_by(SweepRunSegment.ordinal)
+        )
+    ]
+
+
+def copies_sweeper(api, lab, launcher, replicas: int) -> SweepWorker:
+    """A worker that runs `replicas` copies of alpha's server per model run."""
+    config = WorkerConfig(
+        worker_name="test-worker",
+        api_url="http://testserver",
+        sources={SOURCE_KEY: SourceMount(root=lab.root)},
+        transcription=TranscriptionConfig(
+            models_dir=lab.models_dir,
+            artifact_root=lab.artifacts,
+            artifact_store="test",
+            pending_batch=2,
+            model_runtime={"alpha-model": ModelRuntime(replicas=replicas)},
+        ),
+    )
+    return SweepWorker(api, config, launcher=launcher)
+
+
+def busy_script(state):
+    """Slow answers that record how many server copies are working at the same moment."""
+    import threading
+    import time
+
+    lock = threading.Lock()
+
+    def script(filename, params, server):
+        with lock:
+            state["active"].add(id(server))
+            state["most"] = max(state["most"], len(state["active"]))
+        time.sleep(0.03)
+        with lock:
+            state["active"].discard(id(server))
+        return default_script(filename, params, server)
+
+    return script
+
+
+def test_copies_of_one_model_share_its_run(api, db, lab, monkeypatch):
+    from aerochorus.worker import hardware
+
+    monkeypatch.setattr(hardware, "gpu_memory_free_mb", lambda index=0: 12_000)
+    state = {"active": set(), "most": 0}
+    launcher = FakeLauncher(script=busy_script(state))
+    sweep = new_sweep(api)
+    outcomes = copies_sweeper(api, lab, launcher, replicas=2).run_until_idle(1)
+    assert [(o.model, o.status, o.processed) for o in outcomes] == [
+        ("alpha-model", "completed", SEGMENTS)
+    ]
+    assert len(launcher.servers) == 2 and all(s.requests for s in launcher.servers)
+    sent = [f for s in launcher.servers for f in s.requests]
+    assert len(sent) == len(set(sent)) == SEGMENTS  # every segment exactly once
+    assert state["most"] == 2  # both copies worked at the same time
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert alpha.segments_completed == SEGMENTS and alpha.runtime["copies"] == 2
+    assert not any(s.alive for s in launcher.servers)  # all stopped at the end
+
+
+def test_no_second_copy_without_room_on_the_gpu(api, db, lab, monkeypatch):
+    from aerochorus.worker import hardware
+
+    monkeypatch.setattr(hardware, "gpu_memory_free_mb", lambda index=0: 1_000)  # < headroom
+    launcher = FakeLauncher()
+    sweep = new_sweep(api)
+    outcomes = copies_sweeper(api, lab, launcher, replicas=3).run_until_idle(1)
+    assert outcomes[0].status == "completed" and len(launcher.servers) == 1
+    assert api.get_sweep(sweep.id).models[0].runtime["copies"] == 1
+
+
+def test_a_crash_restarts_only_the_copy_that_crashed(api, db, lab, monkeypatch):
+    from aerochorus.worker import hardware
+
+    monkeypatch.setattr(hardware, "gpu_memory_free_mb", lambda index=0: 12_000)
+    sweep = new_sweep(api)
+    poison = sweep_order(db, sweep.id)[3]
+
+    def script(filename, params, server):
+        if filename == poison:
+            crash(server)
+        return default_script(filename, params, server)
+
+    launcher = FakeLauncher(script=script)
+    outcomes = copies_sweeper(api, lab, launcher, replicas=2).run_until_idle(1)
+    assert outcomes[0].status == "completed"
+    assert len(launcher.servers) == 3  # two copies, and one of them restarted once
+    crashed = next(s for s in launcher.servers if poison in s.requests)
+    assert crashed.requests[-1] == poison  # nothing more was sent to the dead server
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert (alpha.segments_error, alpha.segments_completed) == (1, SEGMENTS - 1)
+
+
+def test_a_pause_releases_a_run_with_copies_once(api, db, lab, monkeypatch):
+    from aerochorus.worker import hardware
+
+    monkeypatch.setattr(hardware, "gpu_memory_free_mb", lambda index=0: 12_000)
+    sweep = new_sweep(api)
+    calls = []
+    release = api.release_model_run
+    monkeypatch.setattr(
+        api, "release_model_run", lambda *a, **k: calls.append(a) or release(*a, **k)
+    )
+    state = {"active": set(), "most": 0}
+    slow = busy_script(state)
+
+    def pause_after_three(filename, params, server):
+        if sum(len(s.requests) for s in launcher.servers) == 3:
+            api.control_sweep(sweep.id, "pause")
+        return slow(filename, params, server)
+
+    launcher = FakeLauncher(script=pause_after_three)
+    outcomes = copies_sweeper(api, lab, launcher, replicas=2).run_until_idle(1)
+    assert outcomes[0].status == "released" and len(calls) == 1
+    assert api.get_sweep(sweep.id).status == "paused"
+    api.control_sweep(sweep.id, "resume")
+    copies_sweeper(api, lab, FakeLauncher(), replicas=2).run_until_idle(1)
+    alpha = api.get_sweep(sweep.id).models[0]
+    assert alpha.status == "completed" and alpha.segments_completed == SEGMENTS
 
 
 def test_runs_over_an_unreadable_source_wait_without_loading_a_model(api, db, lab, tmp_path):
